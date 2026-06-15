@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
 Test the ALFWorld federated-learning data sharding functionality.
+
+Run from the repository root (so ./config/paths.yaml resolves):
+    python tests/heterogenous/test_alfworld_fed.py
 """
 
 import os
 import sys
 import ray
+from omegaconf import OmegaConf
 
-# Add the project root to the import path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-sys.path.append(project_root)
+# Resolve the vendored verl-agent root via config/paths.yaml (run from repo root),
+# then put it on the import path so `agent_system...` resolves.
+path_cfg = OmegaConf.load("./config/paths.yaml")
+verl_agent_root = os.path.join(path_cfg.project_root, "third_party/verl-agent")
+sys.path.append(verl_agent_root)
 
 from agent_system.environments.env_package.alfworld.envs import build_alfworld_envs
 
@@ -22,10 +28,10 @@ def test_alfworld_federated_slicing():
 
     # Path to the ALFWorld configuration file
     alf_config_path = os.path.join(
-        project_root, 
+        verl_agent_root,
         "agent_system/environments/env_package/alfworld/configs/config_tw.yaml"
     )
-    
+
     print("=" * 60)
     print("Testing ALFWorld federated-learning data sharding functionality")
     print("=" * 60)
@@ -69,11 +75,11 @@ def test_alfworld_federated_slicing():
             "is_train": False
         }
     ]
-    
+
     for test_case in test_cases:
         print(f"\n{test_case['name']}")
         print("-" * 40)
-        
+
         try:
             # Create the environments
             envs = build_alfworld_envs(
@@ -89,7 +95,7 @@ def test_alfworld_federated_slicing():
                 val_batch_size=100        # Use a smaller validation set size for testing
             )
 
-            print(f"✅ Environment created successfully")
+            print(f"[OK] Environment created successfully")
             print(f"   Environment type: {type(envs).__name__}")
             print(f"   Number of processes: {envs.num_processes}")
             print(f"   Multi-modal: {envs.multi_modal}")
@@ -97,19 +103,19 @@ def test_alfworld_federated_slicing():
             # Test environment reset
             try:
                 obs, image_obs, infos = envs.reset()
-                print(f"✅ Environment reset successfully")
+                print(f"[OK] Environment reset successfully")
                 print(f"   Number of observations: {len(obs)}")
                 print(f"   Image observations: {'yes' if image_obs else 'no'}")
                 print(f"   Number of infos: {len(infos)}")
             except Exception as e:
-                print(f"❌ Environment reset failed: {e}")
+                print(f"[FAIL] Environment reset failed: {e}")
 
             # Close the environments
             envs.close()
-            print(f"✅ Environment closed successfully")
+            print(f"[OK] Environment closed successfully")
 
         except Exception as e:
-            print(f"❌ Environment creation failed: {e}")
+            print(f"[FAIL] Environment creation failed: {e}")
             import traceback
             traceback.print_exc()
 
@@ -118,4 +124,4 @@ def test_alfworld_federated_slicing():
     print("=" * 60)
 
 if __name__ == "__main__":
-    test_alfworld_federated_slicing() 
+    test_alfworld_federated_slicing()

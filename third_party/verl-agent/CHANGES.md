@@ -77,9 +77,11 @@ across clients, implemented primarily for WebShop and selected via
 
 ### 5. Tests and supporting scripts (new)
 
-- `test_alfworld_fed.py` and `test_eval_consistency.py` exercise the federated
-  partition and environment-heterogeneity code paths. Runnable partition-strategy
-  simulations also live under `tests/heterogenous/` in the release root.
+- FedAgent's tests and partition-strategy simulations live OUTSIDE this vendored
+  tree, under `tests/heterogenous/` at the release root (`test_alfworld_fed.py`,
+  `simulate_{preference,coverage,hardness}.py`, `test_data.py`); they import the
+  vendored env package via `config/paths.yaml`. No test files are added inside
+  `third_party/verl-agent/` itself.
 
 ## Files NOT modified
 

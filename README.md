@@ -95,7 +95,35 @@ fedagent/
 ├── tests/                     # partition demos + conversion utilities
 ├── eval/                      # checkpoint evaluation + trajectory collection
 └── third_party/
-    └── verl-agent/            # vendored verl-agent source (no bundled 5.6 GB data)
+    └── verl-agent/            # vendored upstream (Apache-2.0), no bundled 5.6 GB data
+```
+
+### FedAgent code map
+
+FedAgent is a **framework extension**, so first-party code spans two layers: a
+top-level **control plane** and **in-framework hooks** that live inside the
+vendored tree because verl-agent imports/runs them. Everything else under
+`third_party/verl-agent/` is unmodified upstream (Apache-2.0). Per-file detail:
+**[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**; exhaustive edit list:
+[`CHANGES.md`](third_party/verl-agent/CHANGES.md).
+
+```text
+fedagent/                                       ── first-party (this work) ──
+├── core/                 control plane: federated server, round orchestration, aggregation
+├── utils/                model aggregation (FedAvg / FedProx, incl. FSDP)
+├── tools/                run_federated.py, resolve_paths.py, aggregation/, env_heterogeneity/, monitor/
+├── eval/                 checkpoint evaluation + trajectory collection
+├── scripts/              setup_env.sh, federated runners, verl-agent launchers, plotting/
+├── tests/heterogenous/   partition simulations + sharding smoke test
+├── config/, docs/        experiment configs (W&B stripped) + documentation
+│
+└── third_party/verl-agent/    ── vendored upstream (Apache-2.0); our hooks woven in ──
+    ├── agent_system/environments/partition_strategy.py        core heterogeneity constructions
+    ├── agent_system/environments/fed_env_manager.py           federated env managers
+    ├── verl/trainer/main_ppo_fed.py                           federated PPO/GRPO entry point
+    ├── verl/trainer/ppo/ray_trainer_fed.py                    Ray federated trainer
+    ├── verl/utils/checkpoint/fsdp_checkpoint_manager_fed.py   federated checkpoint manager
+    └── verl/utils/tracking_fed.py                             per-round / per-client tracking
 ```
 
 ---
