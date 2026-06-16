@@ -20,10 +20,10 @@
 
 - **[Jun 2026]** Initial release of the FedAgent library, federated PPO/GRPO
   trainer, two-level heterogeneity suite, and full WebShop + ALFWorld reproduction.
-- **[Jun 2026]** Paper online: **Is Decentralized LLM Agent RL Robust to
-  Heterogeneity? An Asymmetric Tale**, by [Canyu Chen](https://canyuchen.com/)\*, [Kangyu Zhu](https://scholar.google.com/citations?user=55J-zgwAAAAJ&hl=en)\*, [Zhaorun Chen](https://billchan226.github.io/),
+- **[Jun 2026]** Paper online: **[Is Decentralized LLM Agent RL Robust to
+  Heterogeneity? An Asymmetric Tale](https://fed-agent.github.io/)**, by [Canyu Chen](https://canyuchen.com/)\*, [Kangyu Zhu](https://scholar.google.com/citations?user=55J-zgwAAAAJ&hl=en)\*, [Zhaorun Chen](https://billchan226.github.io/),
   [Zhanhui Zhou](https://scholar.google.com/citations?user=SbACfYQAAAAJ), [Shizhe Diao](https://shizhediao.github.io/), [Yiping Lu](https://2prime.github.io/), [Tian Li](https://litian96.github.io/), [Manling Li](https://limanling.github.io/), and [Dawn Song](https://dawnsong.io/)
-  ([homepage](https://fed-agent.github.io/) · [PDF](https://fed-agent.github.io/pdf/FedAgent.pdf)). This work is honored to receive the 🏆 **Best Paper Award** in the *AAAI 2026
+  ([PDF](https://fed-agent.github.io/pdf/FedAgent.pdf)). This work is honored to receive the 🏆 **Best Paper Award** in the *AAAI 2026
   Workshop on Trust and Control in Agentic AI* and 🏆 **Outstanding Paper Award**
   in the *AAAI 2026 Workshop on Personalization in the Era of Large Foundation
   Models*.
