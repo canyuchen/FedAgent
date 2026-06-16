@@ -8,10 +8,26 @@ abstract: >-
   robustness analysis.
 type: software
 license: Apache-2.0
-# TODO(author): fill in the fields below before publishing.
+# TODO(author): fill in repository-code / url / version / date-released below before publishing.
 authors:
-  - family-names: "TODO(author)"
-    given-names: "TODO(author)"
+  - family-names: "Chen"
+    given-names: "Canyu"
+  - family-names: "Zhu"
+    given-names: "Kangyu"
+  - family-names: "Chen"
+    given-names: "Zhaorun"
+  - family-names: "Zhou"
+    given-names: "Zhanhui"
+  - family-names: "Diao"
+    given-names: "Shizhe"
+  - family-names: "Lu"
+    given-names: "Yiping"
+  - family-names: "Li"
+    given-names: "Tian"
+  - family-names: "Li"
+    given-names: "Manling"
+  - family-names: "Song"
+    given-names: "Dawn"
 # repository-code: "TODO(author): public repo URL"
 # url: "TODO(author): project page"
 # version: "TODO(author): release version"
@@ -20,7 +36,23 @@ preferred-citation:
   type: article
   title: "Is Decentralized LLM Agent RL Robust to Heterogeneity? An Asymmetric Tale"
   authors:
-    - family-names: "TODO(author)"
-      given-names: "TODO(author)"
+    - family-names: "Chen"
+      given-names: "Canyu"
+    - family-names: "Zhu"
+      given-names: "Kangyu"
+    - family-names: "Chen"
+      given-names: "Zhaorun"
+    - family-names: "Zhou"
+      given-names: "Zhanhui"
+    - family-names: "Diao"
+      given-names: "Shizhe"
+    - family-names: "Lu"
+      given-names: "Yiping"
+    - family-names: "Li"
+      given-names: "Tian"
+    - family-names: "Li"
+      given-names: "Manling"
+    - family-names: "Song"
+      given-names: "Dawn"
   journal: "arXiv preprint arXiv:XXXX.XXXXX"   # TODO(author): arXiv id once available
   year: 2026
