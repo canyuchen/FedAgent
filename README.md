@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="FedAgent logo" width="220"/>
+  <img src="assets/logo_w_text_horizontal.png" alt="FedAgent logo" width="620"/>
 </p>
 
 <h1 align="center">FedAgent: A Library for Decentralized LLM Agent RL</h1>
