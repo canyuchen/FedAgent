@@ -34,46 +34,37 @@
 
 ## Overview
 
-**FedAgent is an extendable library for federated reinforcement learning of LLM
-agents.** It provides reusable, pluggable building blocks: a federated training
-server, model **aggregation strategies** (FedAvg / FedProx / your own), client
-data & environment **partitioning** (a two-level *task* vs *environment*
-heterogeneity suite), and a federated **PPO / GRPO trainer** built on
-[verl-agent](https://github.com/langfengQ/verl-agent), so you can run, study, and
-**extend** federated agent RL on your own datasets, environments, and algorithms.
+FedAgent is a library for federated RL training of LLM agents.
+It implements a federated training server with FedAvg/FedProx aggregation,
+a two-level heterogeneity suite (task vs environment partitioning), and
+federated PPO/GRPO trainers built on
+[verl-agent](https://github.com/langfengQ/verl-agent).
+You can reproduce the paper's experiments or extend the framework with your own
+datasets, environments, and algorithms.
 
-It is *also* the reference implementation for the FedAgent paper; reproducing it is **one** supported use case (see [Reproducing the paper](#reproducing-the-paper)),
-not the whole library. The paper formalizes **agent heterogeneity** at two
-structurally distinct levels (task vs environment) and derives an **asymmetric
-robustness** result: FedAgent is robust to task-level heterogeneity but worst-case
-non-robust to environment-level heterogeneity. See
-[`docs/heterogeneity.md`](docs/heterogeneity.md) for the full construction.
+FedAgent is also the reference implementation for the paper, which formalizes
+agent heterogeneity at two structurally distinct levels (task vs environment)
+and derives an asymmetric robustness result: federated training is robust to
+task-level heterogeneity but worst-case non-robust to environment-level
+heterogeneity. See [`docs/heterogeneity.md`](docs/heterogeneity.md) for
+the full construction.
 
 ---
 
 ## Key Features
 
-- **🧠 Algorithms**: federated **PPO** and **GRPO**, drop-in federated counterparts
-  of the verl-agent trainers.
-- **🤖 Models**: any HuggingFace backbone; the paper uses **Qwen2.5-1.5B / 3B /
-  7B-Instruct** and **Llama-3.2-3B-Instruct** (auto-downloaded on first run).
-- **🌐 Environments**: real agent benchmarks **WebShop** and **ALFWorld** (the
-  vendored verl-agent tree also bundles Sokoban / GymCards / AppWorld).
-- **🎲 Two-level heterogeneity**: a configurable client-partition suite:
-  **task-level** (Preference / Coverage / Hardness) and **environment-level**
-  (5 WebShop variants across the search pipeline).
-- **🔗 Aggregation**: **FedAvg** and **FedProx** out of the box, pluggable for your own.
-- **🛰️ Decentralized setting**: fully configurable federation protocol
-  (clients `N`, clients/round `M`, local epochs `E`, rounds `T`, tasks/client
-  `|Xᵢ|`) with ready-made sweeps over each.
-- **⚙️ FSDP & scaling**: FSDP sharding (param / optimizer offload) for larger
-  backbones; single-GPU, multi-GPU, multi-node, and SLURM / torchrun launch paths.
-- **🔁 Client execution**: run clients **serially** or **in parallel** across GPUs.
-- **🧩 Extensible**: clean extension points for a new dataset/env, heterogeneity
-  strategy, RL algorithm, or aggregation rule (see [`docs/extending.md`](docs/extending.md)).
-- **📉 W&B-free**: no tracking account or key needed; metrics go to JSON / console.
+- Federated **PPO** and **GRPO** trainers, drop-in counterparts of the verl-agent trainers
+- **Two-level heterogeneity suite**: task-level (Preference / Coverage / Hardness)
+  and environment-level (5 WebShop transition variants)
+- **FedAvg** and **FedProx** aggregation, pluggable for custom strategies
+- Fully configurable federation protocol (clients `N`, clients/round `M`,
+  local epochs `E`, rounds `T`, tasks/client `|Xᵢ|`) with ready-made sweeps
+- Any HuggingFace backbone (paper uses Qwen2.5-1.5B/3B/7B-Instruct, Llama-3.2-3B-Instruct)
+- WebShop and ALFWorld benchmarks (verl-agent also bundles Sokoban / GymCards / AppWorld)
+- FSDP sharding, single-GPU to multi-node, SLURM / torchrun launch paths
 
-> 📖 **Detailed walkthrough** of each feature, the config keys, flags, and files that implement them, in **[`docs/features.md`](docs/features.md)**.
+See [`docs/features.md`](docs/features.md) for a detailed walkthrough of each
+feature, including config keys and implementation files.
 
 ---
 
@@ -107,11 +98,11 @@ fedagent/
 
 ### FedAgent code map
 
-FedAgent is a **framework extension**, so first-party code spans two layers: a
-top-level **control plane** and **in-framework hooks** that live inside the
-vendored tree because verl-agent imports/runs them. Everything else under
+FedAgent is a framework extension, so first-party code spans two layers: a
+top-level control plane and in-framework hooks that live inside the vendored
+tree (verl-agent imports/runs them). Everything else under
 `third_party/verl-agent/` is unmodified upstream (Apache-2.0). Per-file detail:
-**[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**; exhaustive edit list:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); exhaustive edit list:
 [`CHANGES.md`](third_party/verl-agent/CHANGES.md).
 
 ```text
@@ -272,7 +263,7 @@ If you use FedAgent in your research, please cite:
 @article{fedagent2026,
   title   = {Is Decentralized LLM Agent RL Robust to Heterogeneity? An Asymmetric Tale},
   author  = {Chen, Canyu and Zhu, Kangyu and Chen, Zhaorun and Zhou, Zhanhui and Diao, Shizhe and Lu, Yiping and Li, Tian and Li, Manling and Song, Dawn},
-  journal = {arXiv preprint arXiv:XXXX.XXXXX},
+  journal = {arXiv preprint arXiv:},
   year    = {2026}
 }
 ```
