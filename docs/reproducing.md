@@ -505,6 +505,9 @@ conda activate fedagent-alfworld
 bash evaluate.sh alfworld <checkpoint-dir>
 ```
 
+A trained checkpoint is FSDP-sharded; `evaluate.sh` merges it to HuggingFace format on
+first use via `eval/convert_fsdp_to_hf.sh` (see [eval/README.md](../eval/README.md)).
+
 `evaluate.sh` dispatches to `eval/eval_<env>.sh`, runs against the **standard
 (unperturbed)** environment, and merges trajectory shards via
 `eval/merge_trajectories.py`. The WebShop harness evaluates with

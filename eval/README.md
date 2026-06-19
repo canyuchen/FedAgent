@@ -20,6 +20,25 @@ ALFWorld; see [docs/installation.md](../docs/installation.md)). There are two la
 | `batch_webshop_eval.sh`, `batch_alfworld_eval.sh` | batched train / val sweeps (below) |
 | `merge_trajectories.py` | merge per-episode shards into a single JSON |
 | `view_results.py` | summarize rollout / validation results (`-f` parquet, `-d` dir) |
+| `convert_fsdp_to_hf.sh` | merge FSDP-sharded checkpoint into a HuggingFace model dir |
+
+## Checkpoint format (FSDP -> HF)
+
+Training and federated aggregation save the actor as **FSDP shards**
+(`model_world_size_*_rank_*.pt`) under an `actor/` dir, not a HuggingFace model (the
+configs set `actor.checkpoint.contents=[model]`). The rollout harness loads weights via
+HF `from_pretrained`, so a trained checkpoint must be merged to HF format first.
+
+- `evaluate.sh` handles this automatically: if the checkpoint is (or contains) a single
+  FSDP-sharded `actor/` dir, it merges to `<actor>/hf_merged/` once and evaluates that.
+- For the batch sweeps, or to convert manually:
+
+  ```bash
+  bash eval/convert_fsdp_to_hf.sh <ckpt>/global_step_N/actor   # -> .../actor/hf_merged
+  ```
+
+A base HuggingFace model id (e.g. `Qwen/Qwen2.5-1.5B-Instruct`) or an already-merged
+directory is used as-is, with no conversion needed.
 
 ## Batched train / val sweeps
 

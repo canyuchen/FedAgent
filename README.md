@@ -224,6 +224,9 @@ Evaluate a trained checkpoint and collect trajectories:
 bash evaluate.sh webshop /path/to/checkpoint
 ```
 
+Trained checkpoints are saved as FSDP shards; `evaluate.sh` merges them to
+HuggingFace format on first use (see [eval/README.md](eval/README.md)).
+
 ---
 
 ## Reproducing the paper

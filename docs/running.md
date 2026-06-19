@@ -255,6 +255,10 @@ bash evaluate.sh webshop  /path/to/checkpoint
 bash evaluate.sh alfworld /path/to/checkpoint
 ```
 
+A trained checkpoint is FSDP-sharded; `evaluate.sh` auto-converts it to HuggingFace
+format on first use (or run `eval/convert_fsdp_to_hf.sh` manually). See
+[eval/README.md](../eval/README.md).
+
 ## Compute budget
 
 For planning a run (the full reproduction recipe and per-sweep breakdown live in
