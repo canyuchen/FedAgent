@@ -5,10 +5,11 @@ Implements the server-side weight-aggregation step of FedAgent (the
 Federated Agent RL method): after each round, the selected clients'
 locally RL-trained policies are combined into one global policy. The
 default and paper-reported aggregator is FedAvg (uniform / weighted
-parameter averaging). A FedProx variant (fedprox_aggregation) is also
-provided, but no live config selects it -- config/example.yaml defaults
-aggregation_method to 'fedavg' and every experiment config under config/
-uses 'fedavg'.
+parameter averaging), and every experiment config under config/ uses it.
+FedProx does NOT change this server-side step: it adds a proximal term to
+each CLIENT's local objective during training (see verl dp_actor.update_policy,
+actor.fedprox_mu), while the server still aggregates by plain FedAvg. The
+legacy server-side `fedprox_aggregation` method below is deprecated and unused.
 
 Models are stored as VERL FSDP-sharded checkpoints, so this module also
 handles loading, merging, and re-sharding those per-rank shard files.
@@ -800,7 +801,15 @@ class ModelAggregator:
                            output_path: str,
                            mu: float = 0.01,
                            global_model_path: Optional[str] = None) -> str:
-        """FedProx aggregation method (with a proximal term).
+        """DEPRECATED / UNUSED. Legacy server-side "FedProx" step.
+
+        FedProx is now implemented on the CLIENT side (the actor adds the proximal
+        term (mu/2)||w - w^t||^2 to its local objective; see verl
+        dp_actor.update_policy and actor.fedprox_mu). The server aggregates by plain
+        FedAvg in all cases, so this method is no longer called by
+        aggregate_round_models. Kept for reference only -- note it never applied a
+        true FedProx update anyway (the interpolation below is a post-hoc damping
+        toward the previous global model, not FedProx's training-time regularizer).
 
         Args:
             model_paths: List of model file paths.
@@ -1330,20 +1339,15 @@ def aggregate_round_models(round_num: int,
     round_aggregate_dir.mkdir(parents=True, exist_ok=True)
 
     # Run the aggregation.
-    if aggregation_method == 'fedavg':
+    if aggregation_method in ('fedavg', 'fedprox'):
+        # Server-side aggregation is plain uniform FedAvg for BOTH methods. FedProx
+        # differs from FedAvg only in the CLIENT's local objective: it adds the
+        # proximal term (mu/2)||w - w^t||^2 during local training (see verl
+        # dp_actor.update_policy, driven by actor.fedprox_mu / the FEDPROX_MU env
+        # var that script_builder exports). There is no separate server-side FedProx
+        # step -- the round aggregate is the uniform average of the client models in
+        # both cases.
         aggregated_models = aggregator.aggregate_verl_models(client_results, round_aggregate_dir, n_gpus_per_node)
-    elif aggregation_method == 'fedprox':
-        # Get the previous round's global model.
-        global_model_path = kwargs.get('global_model_path')
-        aggregated_models = aggregator.aggregate_verl_models(client_results, round_aggregate_dir, n_gpus_per_node)
-
-        # Apply FedProx to each component.
-        mu = kwargs.get('mu', 0.01)
-        for component, model_path in aggregated_models.items():
-            if global_model_path:
-                fedprox_path = round_aggregate_dir / f"fedprox_{component}_model.pth"
-                aggregator.fedprox_aggregation([model_path], str(fedprox_path), mu, global_model_path)
-                aggregated_models[component] = str(fedprox_path)
     else:
         raise ValueError(f"Unsupported aggregation method: {aggregation_method}")
     

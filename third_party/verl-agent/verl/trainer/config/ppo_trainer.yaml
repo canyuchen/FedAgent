@@ -60,6 +60,7 @@ actor_rollout_ref:
     use_torch_compile: True # False to disable torch compile
     kl_loss_coef: 0.001 # for grpo
     kl_loss_type: low_var_kl # for grpo
+    fedprox_mu: 0.0 # FedProx proximal coefficient; 0 = off (== plain FedAvg). Set >0 (e.g. 0.01) only with federated.aggregation_method=fedprox.
     ppo_epochs: 1
     shuffle: False
     ulysses_sequence_parallel_size: 1 # sp size

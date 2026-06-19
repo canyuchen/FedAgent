@@ -392,12 +392,15 @@ def aggregate_round_models(
     output_dir: Path,
     aggregation_method: str = 'fedavg',      # <- federated.aggregation_method
     n_gpus_per_node: int = 1,
-    **kwargs,                                # e.g. mu, global_model_path (FedProx)
+    **kwargs,                                # extra rule-specific args
 ) -> Dict[str, str]:                         # {'actor': path, 'critic': path?}
 ```
 
-Today it dispatches `'fedavg'` and `'fedprox'` (and raises on anything else).
-The heavy lifting is in the `ModelAggregator` class in the same file.
+Today both `'fedavg'` and `'fedprox'` dispatch to the same uniform FedAvg here
+(and it raises on anything else). FedProx is not a distinct server rule: it adds a
+proximal term to each **client's** local objective (`verl/workers/actor/dp_actor.py`),
+leaving server aggregation as FedAvg. The heavy lifting is in the `ModelAggregator`
+class in the same file.
 
 ### The contract
 
@@ -420,12 +423,10 @@ The heavy lifting is in the `ModelAggregator` class in the same file.
      higher-level driver that locates each client's actor (and critic) shard
      dir, checks that all clients are at a consistent `global_step`, and calls
      the shard aggregator per component.
-   - `fedprox_aggregation(model_paths, output_path, mu=0.01, global_model_path=...)`,
-     a worked example of a *non-trivial* rule: it runs FedAvg, then pulls the
-     result toward the previous global model with
-     `w = w_avg + mu*(w_global - w_avg)`. Use it as the template for any rule
-     that needs the prior global model, note `aggregate_round_models` passes
-     `global_model_path` and `mu` through `**kwargs` for exactly this.
+   - For a server-side rule that needs the prior global model, accept it through
+     `aggregate_round_models`'s `**kwargs` and load it alongside the client shards.
+     (The legacy `fedprox_aggregation` method here is **deprecated and unused** — it
+     is not how FedProx works in this repo; FedProx is client-side, see above.)
 
    Most new rules (trimmed mean, median, FedAvgM, per-client weighting by
    dataset size, …) can be implemented by writing a new `average_*` routine and

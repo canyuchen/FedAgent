@@ -44,15 +44,12 @@ class Aggregator:
 
         # Aggregation rule. 'fedavg' (uniform model averaging) is the default and
         # is the only rule used for every reported result in the paper. 'fedprox'
-        # is implemented but unused experimentally (it exists solely for the
-        # mu=0.01 ablation). FedProx needs a reference model to anchor its
-        # proximal term, so we pass the previous round's aggregated global model
-        # as `global_model_path`; round 1 has no previous global model, hence the
-        # `round_num > 1` guard (it stays None on the first round).
+        # uses the SAME server-side uniform averaging and differs only in that each
+        # client adds the proximal term (mu/2)||w - w^t||^2 to its local objective
+        # during training. That mu is bridged to the clients by script_builder
+        # (FEDPROX_MU -> actor.fedprox_mu), so the server needs no reference model
+        # and has no special FedProx path here.
         aggregation_method = self.config['federated'].get('aggregation_method', 'fedavg')
-        global_model_path = None
-        if aggregation_method == 'fedprox' and round_num > 1:
-            global_model_path = self.aggregated_models.get(round_num - 1)
 
         try:
             n_gpus_per_node = self.config.get('verl', {}).get('trainer', {}).get('n_gpus_per_node', 1)
@@ -62,8 +59,6 @@ class Aggregator:
                 output_dir=self.output_dir,
                 aggregation_method=aggregation_method,
                 n_gpus_per_node=n_gpus_per_node,
-                global_model_path=global_model_path,
-                mu=self.config['federated'].get('fedprox_mu', 0.01),
             )
 
             if not aggregated:

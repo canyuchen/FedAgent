@@ -27,8 +27,8 @@ federated:
   eval_only_final_round: true  # round total_rounds+1 is val-only (no FedAvg) for a clean final eval
 
   # ---- Aggregation ----
-  aggregation_method: fedavg   # how client models are combined: "fedavg" or "fedprox"
-  fedprox_mu: 0.01             # FedProx proximal coefficient (used only when aggregation_method: fedprox)
+  aggregation_method: fedavg   # server aggregation is FedAvg either way; "fedprox" also adds a client-side proximal term (see fedprox_mu)
+  fedprox_mu: 0.01             # FedProx proximal coefficient mu (used only when aggregation_method: fedprox; mu=0 == FedAvg)
 
   # ---- Per-client launch ----
   base_script_path: scripts/verl-agent/grpo/run_webshop.sh  # base verl-agent train script (env + algo specific)

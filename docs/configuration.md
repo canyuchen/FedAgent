@@ -199,8 +199,8 @@ federated:
 | `total_rounds` | int | communication rounds *T* (filename `rd-<R>`) |
 | `epochs_per_client` | int | local epochs per selected client *E* (filename `ep-per-cl-<E>`) |
 | `eval_only_final_round` | bool | if true, append a final round that runs validation only (no aggregation), gives a clean end-of-training number |
-| `aggregation_method` | str | `fedavg` (default) or `fedprox`; defaults to `fedavg` if omitted |
-| `fedprox_mu` | float | FedProx proximal coefficient μ; ignored unless `aggregation_method: fedprox`. FedProx engages only from round 2 onward (round 1 has no global anchor) |
+| `aggregation_method` | str | `fedavg` (default) or `fedprox`. Both aggregate by uniform FedAvg on the server; `fedprox` additionally adds a proximal term to each client's **local** objective (see `fedprox_mu`) |
+| `fedprox_mu` | float | FedProx proximal coefficient μ; ignored unless `aggregation_method: fedprox` (μ=0 ≡ FedAvg). Applied **client-side** in `verl/workers/actor/dp_actor.py`; engages every round, anchoring to the round-start global model `w^t` (round 1 anchors to the base backbone) |
 | `base_script_path` | path | per-client verl-agent launch script: `scripts/verl-agent/{grpo,ppo}/run_{webshop,alfworld}.sh`, must match `<algo>` and `<env>` |
 | `output_dir` | path | root for checkpoints, aggregated models, metrics |
 | `training.timeout_per_client` | int (s) | kill a client that exceeds this wall-clock budget |
@@ -442,7 +442,7 @@ Where to plug in, with the file you touch:
 | a new env / dataset | `third_party/verl-agent/agent_system/environments/env_package/` (+ register it) | then point `verl.env.env_name` and `verl.data.*` at it |
 | a new heterogeneity pattern | add a strategy + a branch in `partition_dataset()` in `partition_strategy.py` | select it via `federated.data_sharding.partition.strategy`; see [`docs/heterogeneity.md`](heterogeneity.md#extension-point-adding-a-new-strategy) |
 | a new RL algorithm | the verl-agent trainer (PPO / GRPO / GiGPO / RLOO / DAPO are available upstream) | expose it through `verl.algorithm.adv_estimator` |
-| a new aggregation rule | `utils/model_aggregation.py` (FedAvg and FedProx today) | select via `federated.aggregation_method`; validate with `tools/aggregation/check_aggregation.py` and `tools/aggregation/verify_aggregation.py` |
+| a new aggregation rule | `utils/model_aggregation.py` (FedAvg is the server rule; FedProx is client-side, not a server rule) | select via `federated.aggregation_method`; validate with `tools/aggregation/check_aggregation.py` and `tools/aggregation/verify_aggregation.py` |
 
 `check_aggregation.py` confirms that the aggregated weights equal the (weighted)
 mean of the client shards (`--aggregated-dir`, `--client-dirs`); use it whenever

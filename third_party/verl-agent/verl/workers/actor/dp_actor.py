@@ -57,6 +57,12 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_module = actor_module
         self.actor_optimizer = actor_optimizer
 
+        # FedProx (optional, off by default): a frozen snapshot of the round-start
+        # global model w^t, used to anchor local updates via the proximal term
+        # (mu/2)||w - w^t||^2. Populated lazily on the first update_policy() call
+        # when config.fedprox_mu > 0; stays None (and is never used) otherwise.
+        self._fedprox_global = None
+
         self.use_remove_padding = self.config.get("use_remove_padding", False)
         print(f"Actor use_remove_padding={self.use_remove_padding}")
         self.use_fused_kernels = self.config.get("use_fused_kernels", False)
@@ -317,6 +323,17 @@ class DataParallelPPOActor(BasePPOActor):
         # make sure we are in training mode
         self.actor_module.train()
 
+        # FedProx: on the first update of this client-round, snapshot the round-start
+        # global model w^t (== the just-loaded global checkpoint these local steps
+        # start from). The proximal term below anchors the drifting local weights to
+        # it. fedprox_mu = 0.0 (the default) makes this a no-op, identical to FedAvg.
+        fedprox_mu = float(self.config.get("fedprox_mu", 0.0))
+        if fedprox_mu > 0 and self._fedprox_global is None:
+            self._fedprox_global = {
+                name: param.detach().clone()
+                for name, param in self.actor_module.named_parameters()
+            }
+
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
         multi_turn = data.meta_info.get("multi_turn", False)
 
@@ -430,6 +447,19 @@ class DataParallelPPOActor(BasePPOActor):
                         "actor/pg_clipfrac_lower": pg_clipfrac_lower.detach().item(),
                     }
                     append_to_dict(metrics, data)
+
+                if fedprox_mu > 0 and self._fedprox_global is not None:
+                    # FedProx proximal gradient: add mu * (w - w^t) to the gradient
+                    # accumulated from this minibatch, anchoring the drifting local
+                    # weights w to the round-start global model w^t. Done once per
+                    # optimizer step (it is per-parameter, not per-token), and is
+                    # FSDP-sharded-safe since it is elementwise on each local shard.
+                    for name, param in self.actor_module.named_parameters():
+                        if param.grad is not None and name in self._fedprox_global:
+                            param.grad.add_(
+                                param.data - self._fedprox_global[name].to(param.grad.device),
+                                alpha=fedprox_mu,
+                            )
 
                 grad_norm = self._optimizer_step()
                 data = {"actor/grad_norm": grad_norm.detach().item()}

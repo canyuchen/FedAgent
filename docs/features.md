@@ -100,16 +100,19 @@ bundled env-level data under [`data/env_heterogeneity/`](../data/env_heterogenei
 
 ## 5. Aggregation
 
-Server-side model combination each round. **FedAvg** (weighted parameter mean) and
-**FedProx** (FedAvg plus a proximal term keeping clients near the global model) ship
-in the box; the path is pluggable.
+Server-side model combination each round is **FedAvg** (weighted parameter mean),
+implemented in `utils/model_aggregation.py` / `core/fed/aggregator.py` (the
+FSDP-sharded path and the aggregation verifiers live under `tools/aggregation/`).
+**FedProx** is also available: it keeps each client near the round's global model by
+adding a proximal term (μ/2)‖w − w^t‖² to that client's **local** training
+objective, so it changes the client update — the server still aggregates by FedAvg.
 
 **Configure**
-- `federated.aggregation_method: fedavg` or `fedprox`.
-- `federated.fedprox_mu`, FedProx proximal coefficient (FedProx only).
-- Implementation: `utils/model_aggregation.py` and `core/fed/aggregator.py`; the
-  FSDP-sharded aggregation path and the aggregation verifiers live under
-  `tools/aggregation/`.
+- `federated.aggregation_method: fedavg` (default) or `fedprox`.
+- `federated.fedprox_mu`, the FedProx proximal coefficient μ (FedProx only; μ=0 ≡ FedAvg).
+- FedProx implementation: the proximal term lives in the verl actor
+  (`verl/workers/actor/dp_actor.py`, `update_policy`); `core/fed/script_builder.py`
+  bridges μ to each client through the `FEDPROX_MU` env var → `actor.fedprox_mu`.
 
 Adding a new aggregation rule → [extending.md](extending.md).
 

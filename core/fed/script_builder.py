@@ -304,6 +304,18 @@ class ScriptBuilder:
         shuffle_seed = get_shuffle_seed(self.config, logger=self.logger)
         shuffle_seed_env = f"export SHUFFLE_SEED={shuffle_seed}\n" if shuffle_seed is not None else ""
 
+        # FedProx: bridge the proximal coefficient to the client. The verl hydra
+        # config has no `federated` block, so (like the other federated knobs) we
+        # pass it through an env var that the base run script forwards into
+        # actor_rollout_ref.actor.fedprox_mu. It is 0.0 (a no-op, == FedAvg) unless
+        # federated.aggregation_method is 'fedprox'.
+        _fed_cfg = self.config.get('federated', {})
+        fedprox_mu = (
+            _fed_cfg.get('fedprox_mu', 0.01)
+            if _fed_cfg.get('aggregation_method', 'fedavg') == 'fedprox'
+            else 0.0
+        )
+
         env_vars = f"""#!/bin/bash
 set -x
 
@@ -311,6 +323,7 @@ set -x
 export CLIENT_ID={client_id}
 export ROUND_NUM={round_num}
 export FEDERATED_EPOCHS={epochs}
+export FEDPROX_MU={fedprox_mu}
 export FEDERATED_OUTPUT_DIR={self.output_dir}
 export CUDA_VISIBLE_DEVICES={actual_cuda_device}
 
