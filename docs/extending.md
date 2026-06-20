@@ -425,8 +425,6 @@ class in the same file.
      the shard aggregator per component.
    - For a server-side rule that needs the prior global model, accept it through
      `aggregate_round_models`'s `**kwargs` and load it alongside the client shards.
-     (The legacy `fedprox_aggregation` method here is **deprecated and unused** — it
-     is not how FedProx works in this repo; FedProx is client-side, see above.)
 
    Most new rules (trimmed mean, median, FedAvgM, per-client weighting by
    dataset size, …) can be implemented by writing a new `average_*` routine and

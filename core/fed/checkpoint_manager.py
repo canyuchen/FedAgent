@@ -187,44 +187,6 @@ class CheckpointManager:
 
         self.logger.warning(f"Could not ensure final model save for client {client_id}")
 
-    def cleanup_old_checkpoints_for_client(self, checkpoints_dir: Path,
-                                           client_id: int, round_num: int):
-        """Trim a single client's checkpoint directory, keeping only the latest `global_step`.
-
-        Generic per-client trim helper: it is NOT specific to any run mode,
-        despite the "Centralized resume epoch mode:" prefix baked into its log
-        lines below. That prefix is misleading here: "Centralized resume epoch
-        mode" is a distinct runtime mode gated by the CENTRALIZED_RESUME_EPOCH
-        env var (used in round_orchestrator.py / script_builder.py /
-        run_federated.py / custom_fed_server.py), and this method is not tied
-        to it. Verified via repo-wide grep that this method currently has NO
-        caller; kept for potential reuse (noted 2026-04-18). If revived, drop
-        or adjust the "Centralized resume epoch mode:" log prefix so the logs
-        are not misleading.
-        """
-        try:
-            global_step_dirs = [d for d in checkpoints_dir.iterdir()
-                                if d.is_dir() and d.name.startswith('global_step_')]
-            if len(global_step_dirs) <= 1:
-                return
-            global_step_dirs.sort(key=lambda x: int(x.name.split('_')[2]))
-            latest_step_dir = global_step_dirs[-1]
-            for old_dir in global_step_dirs[:-1]:
-                shutil.rmtree(old_dir)
-                self.logger.info(
-                    f"Centralized resume epoch mode: deleted old checkpoint "
-                    f"{old_dir.name} for client {client_id} in round {round_num}"
-                )
-            self.logger.info(
-                f"Centralized resume epoch mode: kept latest checkpoint "
-                f"{latest_step_dir.name} for client {client_id} in round {round_num}"
-            )
-        except Exception as e:
-            self.logger.warning(
-                f"Failed to cleanup old checkpoints for client {client_id} "
-                f"in round {round_num}: {e}"
-            )
-
     def cleanup_old_round_client_checkpoints(self, current_round: int):
         """Delete client and aggregated checkpoints from earlier rounds, keeping only the last few rounds."""
         max_keep = self.config['federated'].get('max_rounds_to_keep_client_checkpoints', 2)

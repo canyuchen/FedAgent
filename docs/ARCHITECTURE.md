@@ -30,13 +30,12 @@ fedagent/
 │
 ├── core/                          ── Layer 1: control plane ──────────────────
 │   ├── custom_fed_server.py          federated server entry; drives the round loop
-│   ├── fed/
-│   │   ├── round_orchestrator.py     per round: select, launch, collect, aggregate
-│   │   ├── script_builder.py         render each client's verl-agent launch script
-│   │   ├── client_runner.py          launch + supervise one client subprocess
-│   │   ├── aggregator.py             FedAvg / FedProx driver
-│   │   └── checkpoint_manager.py, session_manager.py, config_helpers.py
-│   └── fed_ray_ppo_trainer.py, ppo_model_wrapper.py, extra_metrics.py
+│   └── fed/
+│       ├── round_orchestrator.py     per round: select, launch, collect, aggregate
+│       ├── script_builder.py         render each client's verl-agent launch script
+│       ├── client_runner.py          launch + supervise one client subprocess
+│       ├── aggregator.py             FedAvg / FedProx driver
+│       └── checkpoint_manager.py, session_manager.py, config_helpers.py
 │
 ├── utils/model_aggregation.py        aggregation math (FedAvg/FedProx, incl. FSDP)
 │
@@ -76,7 +75,6 @@ fedagent/
 | `core/fed/client_runner.py` | Launches and supervises a single client's training subprocess. |
 | `core/fed/aggregator.py`, `utils/model_aggregation.py` | Model aggregation (FedAvg / FedProx), including the FSDP-sharded path. |
 | `core/fed/checkpoint_manager.py`, `session_manager.py`, `config_helpers.py` | Checkpoint bookkeeping, resume/session state, config helpers. |
-| `core/fed_ray_ppo_trainer.py`, `core/ppo_model_wrapper.py`, `core/extra_metrics.py` | Ray/PPO glue and metric hooks on the control side. |
 | `tools/run_federated.py` | CLI front-end (`--smart/restart/direct-resume`) → resolves paths → invokes the server. |
 | `tools/resolve_paths.py` | Single source of truth for output-dir / meta naming from a config. |
 | `tools/generate_uniform_configs.py`, `verify_train_val_disjoint.py` | Config-matrix generation and a train/val split sanity check. |

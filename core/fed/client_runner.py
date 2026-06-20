@@ -268,16 +268,6 @@ class ClientRunner:
             self.logger.warning(f"Failed to load metrics from JSON: {str(e)}")
             return None
 
-    def _parse_metrics_from_log(self, log_content: str) -> Dict[str, Any]:
-        """Parse metrics from the contents of a `training.log` file.
-
-        Dead code as of 2026-04-18: nothing in the repo calls this. The live
-        path parses stdout instead (`_parse_metrics_from_stdout`). Retained only
-        as a thin wrapper over the shared parser `_parse_text_for_metrics` in
-        case log-file parsing is wired back in; delete if still unused.
-        """
-        return self._parse_text_for_metrics(log_content)
-
     def _parse_metrics_from_stdout(self, stdout: str, stderr: str) -> Dict[str, Any]:
         """Parse metrics from stdout (the fallback used when JSON logs are unavailable)."""
         metrics = self._parse_text_for_metrics(stdout)

@@ -8,8 +8,7 @@ default and paper-reported aggregator is FedAvg (uniform / weighted
 parameter averaging), and every experiment config under config/ uses it.
 FedProx does NOT change this server-side step: it adds a proximal term to
 each CLIENT's local objective during training (see verl dp_actor.update_policy,
-actor.fedprox_mu), while the server still aggregates by plain FedAvg. The
-legacy server-side `fedprox_aggregation` method below is deprecated and unused.
+actor.fedprox_mu), while the server still aggregates by plain FedAvg.
 
 Models are stored as VERL FSDP-sharded checkpoints, so this module also
 handles loading, merging, and re-sharding those per-rank shard files.
@@ -797,73 +796,7 @@ class ModelAggregator:
         except Exception as e:
             self.logger.error(f"Error during FSDP aggregation: {e}, falling back to single GPU")
             return self._single_gpu_aggregation(model_paths, model_dir, expected_global_step, weights, model_type)
-    def fedprox_aggregation(self, model_paths: List[str], 
-                           output_path: str,
-                           mu: float = 0.01,
-                           global_model_path: Optional[str] = None) -> str:
-        """DEPRECATED / UNUSED. Legacy server-side "FedProx" step.
 
-        FedProx is now implemented on the CLIENT side (the actor adds the proximal
-        term (mu/2)||w - w^t||^2 to its local objective; see verl
-        dp_actor.update_policy and actor.fedprox_mu). The server aggregates by plain
-        FedAvg in all cases, so this method is no longer called by
-        aggregate_round_models. Kept for reference only -- note it never applied a
-        true FedProx update anyway (the interpolation below is a post-hoc damping
-        toward the previous global model, not FedProx's training-time regularizer).
-
-        Args:
-            model_paths: List of model file paths.
-            output_path: Output path.
-            mu: Proximal-term coefficient.
-            global_model_path: Path to the global model (used for the proximal term).
-
-        Returns:
-            Path to the aggregated model.
-        """
-        if not model_paths:
-            self.logger.error("No model paths provided for aggregation")
-            return None
-        
-        self.logger.info(f"Starting FedProx aggregation with {len(model_paths)} models, mu={mu}")
-        
-        # Load the global model (if provided).
-        global_state_dict = None
-        if global_model_path:
-            try:
-                global_checkpoint = torch.load(global_model_path, map_location='cpu', weights_only=False)
-                global_state_dict = global_checkpoint.get('model', global_checkpoint)
-            except Exception as e:
-                self.logger.warning(f"Failed to load global model: {str(e)}")
-        
-        # Run FedAvg aggregation.
-        aggregated_path = self.fedavg_aggregation(model_paths, output_path)
-
-        # If a global model was provided, apply the proximal term.
-        if global_state_dict and aggregated_path:
-            try:
-                aggregated_checkpoint = torch.load(aggregated_path, map_location='cpu')
-                aggregated_state = aggregated_checkpoint['model']
-
-                # Apply the proximal term: w = w_avg + mu * (w_global - w_avg).
-                for key in aggregated_state:
-                    if key in global_state_dict:
-                        aggregated_state[key] = aggregated_state[key] + mu * (
-                            global_state_dict[key] - aggregated_state[key]
-                        )
-
-                # Update the aggregation metadata.
-                aggregated_checkpoint['aggregation_info']['method'] = 'fedprox'
-                aggregated_checkpoint['aggregation_info']['mu'] = mu
-                aggregated_checkpoint['aggregation_info']['global_model_path'] = global_model_path
-                
-                torch.save(aggregated_checkpoint, aggregated_path)
-                self.logger.info(f"FedProx aggregation completed with proximal term")
-                
-            except Exception as e:
-                self.logger.error(f"Failed to apply proximal term: {str(e)}")
-        
-        return aggregated_path
-    
     def aggregate_verl_models(self, client_results: List[Dict[str, Any]], 
                             output_dir: Path, n_gpus_per_node: int = 1) -> Dict[str, str]:
         """Aggregate verl-agent models - using the FSDP aggregation method.
@@ -1284,34 +1217,6 @@ class ModelAggregator:
             return None
         except (ValueError, IndexError):
             return None
-    
-    def validate_aggregation(self, model_paths: List[str], aggregated_path: str) -> bool:
-        """Validate the aggregation result.
-
-        Args:
-            model_paths: List of original model paths.
-            aggregated_path: Path to the aggregated model.
-
-        Returns:
-            Whether validation passed.
-        """
-        try:
-            # Load the aggregated model.
-            aggregated_checkpoint = torch.load(aggregated_path, map_location='cpu', weights_only=False)
-            aggregated_state = aggregated_checkpoint['model']
-
-            # Check the key parameters.
-            for key, value in aggregated_state.items():
-                if not torch.isfinite(value).all():
-                    self.logger.error(f"Invalid values found in aggregated model: {key}")
-                    return False
-            
-            self.logger.info("Aggregation validation passed")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Aggregation validation failed: {str(e)}")
-            return False
 
 
 def aggregate_round_models(round_num: int, 
