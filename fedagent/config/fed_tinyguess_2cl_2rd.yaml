@@ -1,0 +1,25 @@
+# FedAgent verl-0.8 federated smoke: 2 clients x 2 rounds on TinyGuess.
+#
+# Consumed by fedagent.fed.run_fed (NOT the verl/Hydra trainer config -- that is
+# fedagent_ppo.yaml, layered per client subprocess). This is the federated
+# ORCHESTRATION config: round/client loop, partition, aggregation.
+#
+# Proves the federated closed loop on stock verl 0.8: each (client, round) trains
+# via `python -m fedagent.main_ppo_fed`, the two clients' FSDP checkpoints are
+# FedAvg'd (matched-PG, validated), merged back to HF, and round 2 trains from
+# that aggregated model. Kept tiny (1 PPO step/client/round) for fast iteration.
+
+model_path: ""                 # "" => auto-discover local Qwen2.5-0.5B-Instruct
+output_dir: /tmp/xbb9020_fedagent_fed_tinyguess
+
+total_clients: 2
+clients_per_round: 2           # smoke: both clients every round
+total_rounds: 2
+epochs_per_round: 1
+base_seed: 42                  # per-client FEDAGENT_BASE_SEED = base_seed + client_id
+
+n_gpus_per_node: 2             # client world_size; == aggregator torchrun nproc
+total_training_steps: 1        # cap each client-round to 1 PPO step (smoke speed)
+save_freq: 1                   # save the (only) step so aggregation has shards
+weights: ""                    # "" => uniform FedAvg (0.5, 0.5)
+wait_between_clients: 5        # seconds between sequential clients (Ray/GPU release)

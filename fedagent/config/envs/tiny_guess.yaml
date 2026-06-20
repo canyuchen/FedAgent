@@ -1,0 +1,10 @@
+# Env-spec consumed by fedagent.data.agentic_dataset.AgenticDataset.
+# (Phase 1 wiring proof only; the research suite is WebShop/ALFWorld in Phase 2/3.)
+envs:
+  - name: TinyGuess
+    n_envs: 64
+    max_turns: 6
+    agent_name: gym_text
+    config:
+      lo: 1
+      hi: 50

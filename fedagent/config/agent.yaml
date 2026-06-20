@@ -1,0 +1,5 @@
+# Agent-loop registry consumed by verl's AgentLoopManager
+# (actor_rollout_ref.rollout.agent.agent_loop_config_path points here).
+# Each entry maps an `agent_name` (carried on dataset rows) to its AgentLoopBase class.
+- name: gym_text
+  _target_: fedagent.agent_loops.gym_text_agent_loop.GymTextAgentLoop

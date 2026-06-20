@@ -1,0 +1,353 @@
+#!/usr/bin/env python
+"""Lean verl-0.8 federated runner for FedAgent (thin overlay).
+
+Closes the FedAgent federated loop on STOCK verl 0.8 the FedAgent way -- one
+training SUBPROCESS per (client, round), then FedAvg the resulting FSDP
+checkpoints and re-enter the next round from the aggregated model. The
+orchestration is verl-agnostic: a client is just ``python -m fedagent.main_ppo_fed``
+(the Phase-1 entry), so this driver never imports verl.
+
+Round r:
+    model_r = base_model                       (r == 1)
+            = round_{r-1}/aggregated/hf        (r > 1)   # merged FedAvg'd shards
+    for each selected client c (SEQUENTIAL):
+        python -m fedagent.main_ppo_fed ...
+            actor_rollout_ref.model.path=model_r
+            trainer.default_local_dir=round_r/client_c/checkpoints
+            trainer.total_epochs=E
+          env  FEDAGENT_BASE_SEED=base_seed+c     # distinct env instances per client
+        -> round_r/client_c/checkpoints/global_step_K/actor   (FSDP shards, ws=n_gpus)
+    FedAvg: torchrun --nproc_per_node=ws tools/.../aggregate_fedavg_fsdp.py
+            --client-actor-dirs <c0>,<c1> --output-actor-dir round_r/aggregated/.../actor
+    merge : python -m verl.model_merger merge --backend fsdp
+            --local_dir <agg actor> --target_dir round_r/aggregated/hf
+
+The loop is "closed" when round 2 trains from round-1's aggregated model and a
+final aggregated model exists.
+
+Why not reuse core/custom_fed_server.py: that orchestrator regex-rewrites the
+verl-agent 0.3.1 base bash script (core/fed/script_builder.py) and assumes a
+``config['verl']/['data_preprocess']`` schema + ``model_world_size_1`` single-rank
+checkpoints -- none of which the thin overlay uses. This is its verl-0.8 successor.
+
+Usage (run inside the fedagent-verl08 env, on the GPU node):
+    python -m fedagent.fed.run_fed --config fedagent/config/fed_tinyguess_2cl_2rd.yaml
+CLI flags override the YAML: --model-path --output-dir --rounds --clients.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import List, Optional
+
+from omegaconf import OmegaConf
+
+# fedagent/fed/run_fed.py -> PKG_DIR=fedagent/ , REPO_ROOT=repo root
+PKG_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = PKG_DIR.parent
+AGGREGATOR = REPO_ROOT / "tools" / "verl08_migration" / "aggregate_fedavg_fsdp.py"
+
+DEFAULTS = {
+    "model_path": "",                       # "" => auto-discover Qwen2.5-0.5B-Instruct
+    "env_spec": str(PKG_DIR / "config" / "envs" / "tiny_guess.yaml"),
+    "custom_cls_path": str(PKG_DIR / "data" / "agentic_dataset.py"),
+    "agent_config_path": str(PKG_DIR / "config" / "agent.yaml"),
+    "output_dir": "/tmp/xbb9020_fedagent_fed_tinyguess",
+    "total_clients": 2,
+    "clients_per_round": 2,
+    "total_rounds": 2,
+    "epochs_per_round": 1,
+    "base_seed": 42,
+    "n_gpus_per_node": 2,
+    "total_training_steps": 1,              # cap per client-round (keep the smoke fast)
+    "save_freq": 1,
+    "weights": "",                          # "" => uniform FedAvg
+    "wait_between_clients": 5,              # seconds; let Ray/GPU fully release
+}
+
+
+# ----------------------------------------------------------------- logging
+def log(msg: str):
+    print(f"[fed] {msg}", flush=True)
+
+
+def banner(msg: str):
+    bar = "=" * 78
+    print(f"\n{bar}\n[fed] {msg}\n{bar}", flush=True)
+
+
+# ----------------------------------------------------------------- helpers
+def discover_model() -> str:
+    """Locate a local Qwen2.5-0.5B-Instruct snapshot (offline), mirroring run_smoke.sh."""
+    for base in ("/projects/b1222/.cache/huggingface", os.path.expanduser("~/.cache/huggingface")):
+        hub = Path(base) / "hub" / "models--Qwen--Qwen2.5-0.5B-Instruct" / "snapshots"
+        if hub.is_dir():
+            snaps = sorted(hub.glob("*/"))
+            if snaps:
+                return str(snaps[0]).rstrip("/")
+    raise FileNotFoundError("No local Qwen2.5-0.5B-Instruct snapshot found")
+
+
+def verl_cfg_dir() -> str:
+    """verl's stock ppo_trainer config dir (for hydra.searchpath); env wins if set."""
+    if os.environ.get("VERL_CFG"):
+        return os.environ["VERL_CFG"]
+    import verl  # noqa
+    return str(Path(verl.__file__).resolve().parent / "trainer" / "config")
+
+
+def latest_actor_dir(ckpt_root: Path) -> Optional[Path]:
+    """Newest ``global_step_K/actor`` under ckpt_root that actually holds FSDP shards."""
+    if not ckpt_root.is_dir():
+        return None
+    steps = []
+    for d in ckpt_root.iterdir():
+        if d.is_dir() and d.name.startswith("global_step_"):
+            try:
+                steps.append((int(d.name.split("_")[2]), d))
+            except (ValueError, IndexError):
+                continue
+    for _, d in sorted(steps, reverse=True):
+        actor = d / "actor"
+        if actor.is_dir() and list(actor.glob("model_world_size_*_rank_*.pt")):
+            return actor
+    return None
+
+
+def world_size_of(actor_dir: Path) -> int:
+    """world_size of the saved shards (== aggregator nproc): fsdp_config.json, else filename."""
+    cfg = actor_dir / "fsdp_config.json"
+    if cfg.is_file():
+        try:
+            return int(json.loads(cfg.read_text())["world_size"])
+        except (ValueError, KeyError, OSError):
+            pass
+    ws = {int(p.name.split("model_world_size_")[1].split("_rank_")[0])
+          for p in actor_dir.glob("model_world_size_*_rank_*.pt")}
+    if len(ws) != 1:
+        raise RuntimeError(f"Cannot determine a unique world_size in {actor_dir}: {ws}")
+    return ws.pop()
+
+
+def stream(cmd: List[str], env: dict, log_path: Path, tag: str) -> int:
+    """Run cmd, tee combined stdout/stderr to console (tagged) and to log_path. Return rc."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log(f"$ {' '.join(cmd)}")
+    log(f"  (log: {log_path})")
+    with open(log_path, "w") as lf:
+        proc = subprocess.Popen(
+            cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        for line in proc.stdout:
+            sys.stdout.write(f"  [{tag}] {line}")
+            sys.stdout.flush()
+            lf.write(line)
+        proc.wait()
+    return proc.returncode
+
+
+# ----------------------------------------------------------------- stages
+def select_clients(round_num: int, total: int, per_round: int, base_seed: int) -> List[int]:
+    """Deterministic per-round client selection (seed = base_seed + round - 1), matching
+    core/fed/round_orchestrator.select_clients so the loop is reproducible on resume."""
+    if per_round >= total:
+        return list(range(total))
+    import random
+    rng = random.Random(base_seed + round_num - 1)
+    return sorted(rng.sample(range(total), per_round))
+
+
+def run_client(cfg, round_num: int, client_id: int, model_path: str,
+               env_base: dict) -> Path:
+    """Train one client for one round; return its latest actor checkpoint dir."""
+    ckpt_root = Path(cfg.output_dir) / f"round_{round_num}" / f"client_{client_id}" / "checkpoints"
+    cmd = [
+        sys.executable, "-m", "fedagent.main_ppo_fed",
+        f"data.train_files={cfg.env_spec}",
+        f"data.val_files={cfg.env_spec}",
+        f"data.custom_cls.path={cfg.custom_cls_path}",
+        f"actor_rollout_ref.model.path={model_path}",
+        "+actor_rollout_ref.model.override_config.attn_implementation=sdpa",
+        f"actor_rollout_ref.rollout.agent.agent_loop_config_path={cfg.agent_config_path}",
+        f"trainer.default_local_dir={ckpt_root}",
+        f"trainer.n_gpus_per_node={cfg.n_gpus_per_node}",
+        f"trainer.total_epochs={cfg.epochs_per_round}",
+        f"trainer.total_training_steps={cfg.total_training_steps}",
+        f"trainer.save_freq={cfg.save_freq}",
+        "trainer.val_before_train=false",
+        f"trainer.project_name=fedagent_fed",
+        f"trainer.experiment_name=round{round_num}_client{client_id}",
+    ]
+    env = dict(env_base)
+    # distinct, reproducible env instances per client (AgenticDataset reads this);
+    # round-invariant so a client's task distribution is stable across rounds.
+    env["FEDAGENT_BASE_SEED"] = str(cfg.base_seed + client_id)
+
+    log_path = ckpt_root.parent / "training.log"
+    rc = stream(cmd, env, log_path, tag=f"r{round_num}c{client_id}")
+    if rc != 0:
+        raise RuntimeError(f"client {client_id} round {round_num} FAILED (rc={rc}); see {log_path}")
+
+    actor = latest_actor_dir(ckpt_root)
+    if actor is None:
+        raise RuntimeError(
+            f"client {client_id} round {round_num}: no checkpoint produced under {ckpt_root}; "
+            f"see {log_path}"
+        )
+    log(f"client {client_id} round {round_num} OK -> {actor}")
+    return actor
+
+
+def fedavg(cfg, round_num: int, client_actors: List[Path], env_base: dict) -> Path:
+    """FedAvg the clients' actor shards under a matched-ws PG; return the aggregated actor dir."""
+    ws = world_size_of(client_actors[0])
+    for a in client_actors[1:]:
+        if world_size_of(a) != ws:
+            raise RuntimeError(f"world_size mismatch across clients: {a} != ws {ws}")
+
+    agg_actor = (Path(cfg.output_dir) / f"round_{round_num}" / "aggregated"
+                 / "checkpoints" / "global_step_0" / "actor")
+    cmd = [
+        "torchrun", f"--nproc_per_node={ws}", str(AGGREGATOR),
+        "--phase", "aggregate",
+        "--client-actor-dirs", ",".join(str(a) for a in client_actors),
+        "--output-actor-dir", str(agg_actor),
+        "--global-step", "0",
+    ]
+    if cfg.weights:
+        cmd += ["--weights", cfg.weights]
+    log_path = Path(cfg.output_dir) / f"round_{round_num}" / "aggregated" / "aggregate.log"
+    rc = stream(cmd, env_base, log_path, tag=f"agg-r{round_num}")
+    if rc != 0:
+        raise RuntimeError(f"FedAvg round {round_num} FAILED (rc={rc}); see {log_path}")
+    if not list(agg_actor.glob("model_world_size_*_rank_*.pt")):
+        raise RuntimeError(f"FedAvg round {round_num}: no aggregated shards in {agg_actor}")
+    if not (agg_actor / "huggingface").is_dir():
+        raise RuntimeError(f"FedAvg round {round_num}: missing huggingface/ config in {agg_actor}")
+    log(f"FedAvg round {round_num} OK (ws={ws}) -> {agg_actor}")
+    return agg_actor
+
+
+def merge_to_hf(cfg, round_num: int, agg_actor: Path, env_base: dict) -> Path:
+    """Merge aggregated FSDP shards -> a complete HF model dir for the next round's model.path."""
+    hf_dir = Path(cfg.output_dir) / f"round_{round_num}" / "aggregated" / "hf"
+    cmd = [
+        sys.executable, "-m", "verl.model_merger", "merge",
+        "--backend", "fsdp",
+        "--local_dir", str(agg_actor),
+        "--target_dir", str(hf_dir),
+    ]
+    log_path = Path(cfg.output_dir) / f"round_{round_num}" / "aggregated" / "merge.log"
+    rc = stream(cmd, env_base, log_path, tag=f"merge-r{round_num}")
+    if rc != 0:
+        raise RuntimeError(f"model_merger round {round_num} FAILED (rc={rc}); see {log_path}")
+    if not (hf_dir / "config.json").is_file():
+        raise RuntimeError(f"merge round {round_num}: no config.json in {hf_dir}")
+    weights = list(hf_dir.glob("*.safetensors")) + list(hf_dir.glob("*.bin"))
+    if not weights:
+        raise RuntimeError(f"merge round {round_num}: no weight files in {hf_dir}")
+    log(f"merge round {round_num} OK -> {hf_dir} ({len(weights)} weight file(s))")
+    return hf_dir
+
+
+# ----------------------------------------------------------------- driver
+def run(cfg) -> dict:
+    out = Path(cfg.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    base_model = cfg.model_path or discover_model()
+    env_base = os.environ.copy()
+    env_base["PYTHONPATH"] = f"{REPO_ROOT}:{env_base.get('PYTHONPATH', '')}".rstrip(":")
+    env_base["VERL_CFG"] = verl_cfg_dir()
+
+    banner(f"FedAgent federated loop  |  {cfg.total_clients} clients, "
+           f"{cfg.clients_per_round}/round, {cfg.total_rounds} rounds, "
+           f"E={cfg.epochs_per_round}")
+    log(f"base model : {base_model}")
+    log(f"output dir : {out}")
+    log(f"aggregator : {AGGREGATOR}")
+    if not AGGREGATOR.is_file():
+        raise FileNotFoundError(f"aggregator not found: {AGGREGATOR}")
+
+    history = []
+    current_model = base_model
+    for r in range(1, cfg.total_rounds + 1):
+        selected = select_clients(r, cfg.total_clients, cfg.clients_per_round, cfg.base_seed)
+        banner(f"ROUND {r}/{cfg.total_rounds}  |  clients={selected}  |  "
+               f"model={'BASE' if r == 1 else 'round %d aggregated' % (r - 1)}")
+        log(f"round {r} starting model: {current_model}")
+
+        client_actors = []
+        for c in selected:
+            client_actors.append(run_client(cfg, r, c, current_model, env_base))
+            if c != selected[-1] and cfg.wait_between_clients > 0:
+                time.sleep(cfg.wait_between_clients)
+
+        agg_actor = fedavg(cfg, r, client_actors, env_base)
+        hf_dir = merge_to_hf(cfg, r, agg_actor, env_base)
+
+        history.append({
+            "round": r, "clients": selected,
+            "started_from": current_model,
+            "client_actors": [str(a) for a in client_actors],
+            "aggregated_actor": str(agg_actor),
+            "aggregated_hf": str(hf_dir),
+        })
+        current_model = str(hf_dir)   # <-- the loop closes here: next round trains from this
+
+    summary = {
+        "total_clients": cfg.total_clients,
+        "clients_per_round": cfg.clients_per_round,
+        "total_rounds": cfg.total_rounds,
+        "epochs_per_round": cfg.epochs_per_round,
+        "base_model": base_model,
+        "final_model": current_model,
+        "rounds": history,
+    }
+    (out / "federated_summary.json").write_text(json.dumps(summary, indent=2))
+
+    banner("FEDERATED LOOP CLOSED ✅")
+    for h in history:
+        from_lbl = "BASE" if h["started_from"] == base_model else "prev-aggregated"
+        log(f"round {h['round']}: clients {h['clients']} trained from {from_lbl} "
+            f"-> aggregated -> {h['aggregated_hf']}")
+    log(f"final aggregated model: {current_model}")
+    log(f"summary: {out / 'federated_summary.json'}")
+    return summary
+
+
+def load_cfg(args) -> "OmegaConf":
+    cfg = OmegaConf.create(dict(DEFAULTS))
+    if args.config:
+        cfg = OmegaConf.merge(cfg, OmegaConf.load(args.config))
+    if args.model_path is not None:
+        cfg.model_path = args.model_path
+    if args.output_dir is not None:
+        cfg.output_dir = args.output_dir
+    if args.rounds is not None:
+        cfg.total_rounds = args.rounds
+    if args.clients is not None:
+        cfg.total_clients = args.clients
+        cfg.clients_per_round = min(cfg.clients_per_round, args.clients)
+    return cfg
+
+
+def main():
+    ap = argparse.ArgumentParser(description="FedAgent verl-0.8 federated runner")
+    ap.add_argument("--config", help="federated YAML config")
+    ap.add_argument("--model-path", default=None, help="base HF model dir (round 1)")
+    ap.add_argument("--output-dir", default=None)
+    ap.add_argument("--rounds", type=int, default=None)
+    ap.add_argument("--clients", type=int, default=None)
+    args = ap.parse_args()
+
+    cfg = load_cfg(args)
+    run(cfg)
+
+
+if __name__ == "__main__":
+    main()

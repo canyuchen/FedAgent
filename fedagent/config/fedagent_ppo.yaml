@@ -1,0 +1,71 @@
+# FedAgent verl-0.8 training config (thin overlay).
+#
+# Layers on verl's STOCK `ppo_trainer` base, resolved via hydra.searchpath -> verl's
+# trainer/config dir (exported as $VERL_CFG by the launch script). We override only the
+# leaves FedAgent needs; machine/run-specific paths (model, env-spec, package configs,
+# output dir) and the one struct-additive key (model.override_config.attn_implementation,
+# passed with `+`) are supplied on the CLI by scripts/run_smoke.sh.
+defaults:
+  - ppo_trainer
+  - _self_
+
+hydra:
+  searchpath:
+    - file://${oc.env:VERL_CFG}
+
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: false
+
+data:
+  train_batch_size: 8
+  val_batch_size: 8
+  max_prompt_length: 512
+  max_response_length: 512
+  custom_cls:
+    name: AgenticDataset
+    # path: <abs path to fedagent/data/agentic_dataset.py>   (set on CLI)
+
+actor_rollout_ref:
+  actor:
+    optim:
+      lr: 1e-6
+    ppo_mini_batch_size: 8
+    ppo_micro_batch_size_per_gpu: 4
+    use_kl_loss: false
+    fsdp_config:
+      param_offload: false
+      optimizer_offload: false
+  rollout:
+    name: vllm
+    mode: async
+    multi_turn:
+      enable: true
+    n: 4
+    prompt_length: 512
+    response_length: 512
+    gpu_memory_utilization: 0.5
+    tensor_model_parallel_size: 1
+    log_prob_micro_batch_size_per_gpu: 4
+    agent:
+      default_agent_loop: gym_text
+      # agent_loop_config_path: <abs path to fedagent/config/agent.yaml>   (set on CLI)
+  ref:
+    log_prob_micro_batch_size_per_gpu: 4
+    fsdp_config:
+      param_offload: true
+
+reward_model:
+  enable: false
+
+trainer:
+  n_gpus_per_node: 2
+  nnodes: 1
+  total_epochs: 1
+  total_training_steps: 2
+  save_freq: 1
+  test_freq: -1
+  val_before_train: false
+  logger: [console]
+  project_name: fedagent_phase1
+  experiment_name: tinyguess_pkg
