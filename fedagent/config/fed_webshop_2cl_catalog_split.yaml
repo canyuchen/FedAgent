@@ -1,0 +1,48 @@
+# FedAgent verl-0.8 FIRST REAL SCIENCE RUN: 2 clients x 2 rounds on WebShop with
+# ENV-LEVEL heterogeneity (Catalog Split = paper Variant 1, Stage 1 content).
+#
+# Each client gets a DISJOINT product catalog (a different hidden transition kernel
+# P_i) via its own remote WebShop service; FedAvg aggregates across the divergent
+# envs and round 2 re-enters from the aggregate. This proves the ENV-HETEROGENEITY
+# arm of the Input-Dynamics Asymmetry composes with the federated loop on the REAL
+# WebShop env.
+#
+# SCOPE: validates the MECHANISM (disjoint catalogs + federation end-to-end), not the
+# asymmetry magnitude. With Qwen2.5-0.5B and a 6-turn budget the task reward is weak
+# (see Phase 2 notes) -- the signal-strength study needs a capable model + 15-turn
+# budget + many rounds (Phase 8).
+#
+# Consumed by fedagent.fed.run_fed (the federated orchestrator), NOT the verl trainer.
+
+env_kind: webshop
+env_spec: config/envs/webshop.yaml          # resolved against the package dir
+output_dir: /tmp/xbb9020_fedagent_fed_webshop
+
+total_clients: 2
+clients_per_round: 2
+total_rounds: 2
+epochs_per_round: 1
+base_seed: 42
+
+n_gpus_per_node: 2
+total_training_steps: 1                       # 1 PPO step / client / round (smoke speed)
+save_freq: 1
+wait_between_clients: 8                        # WebShop teardown is heavier; give Ray/GPU room
+
+# --- env-level heterogeneity: Catalog Split (paper Variant 1) ---
+partition_strategy: catalog_split
+env_div: 0.7                                  # heterogeneity strength
+keep_ratio: 0.7                               # distractor density
+min_goals_per_client: 100
+webshop_pool_size: 8                          # >= gen_batch (train_batch_size 4 x rollout.n 2 = 8)
+webshop_base_port: 8080                       # client c -> :808{c}
+
+# --- WebShop verl overrides (match the validated Phase-2 WebShop smoke) ---
+client_overrides:
+  - data.train_batch_size=4
+  - data.max_prompt_length=2048
+  - data.max_response_length=1024
+  - actor_rollout_ref.actor.ppo_mini_batch_size=4
+  - actor_rollout_ref.rollout.n=2
+  - actor_rollout_ref.rollout.prompt_length=2048
+  - actor_rollout_ref.rollout.response_length=1024

@@ -59,9 +59,13 @@ def _extract_task(obs: str) -> str:
 class WebShopEnv(BaseTextEnv):
     def __init__(self, env_config: Optional[Dict[str, Any]] = None):
         super().__init__(env_config)
+        # WEBSHOP_SERVICE_URL (env) is authoritative: the federated runner sets it
+        # PER CLIENT so each client talks to its own Catalog-Split service. The spec's
+        # service_url is only a fallback for ad-hoc single-service use.
         self.base_url = (
-            self.env_config.get("service_url")
-            or os.environ.get("WEBSHOP_SERVICE_URL", "http://localhost:8080")
+            os.environ.get("WEBSHOP_SERVICE_URL")
+            or self.env_config.get("service_url")
+            or "http://localhost:8080"
         ).rstrip("/")
         self.timeout = float(self.env_config.get("timeout", 120.0))
         self.session_id = uuid4().hex

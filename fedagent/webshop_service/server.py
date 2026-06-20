@@ -45,6 +45,31 @@ POOL_SIZE = int(os.environ.get("WEBSHOP_POOL_SIZE", "4"))
 NUM_GOALS = int(os.environ.get("WEBSHOP_NUM_GOALS", "6910"))  # confirmed pool size in standalone smoke
 ENV_KWARGS = {"observation_mode": "text", "num_products": None}
 
+# --- env-level heterogeneity (Phase 4): ONE client's Catalog-Split variant ---
+# When PARTITION_STRATEGY=catalog_split, the WHOLE pool is built with this client's
+# disjoint catalog (search/click restricted to CATALOG_ASINS) and every reset draws
+# its goal from this client's slice (CLIENT_GOAL_IDXS). One service instance == one
+# client's environment (a distinct hidden transition kernel P_i — the env arm of the
+# Input-Dynamics Asymmetry). Bridged via env vars (CLIENT_ID/CLIENT_NUM/ENV_DIV/
+# KEEP_RATIO/MIN_GOALS_PER_CLIENT/HOLDOUT_FILE), mirroring verl-agent's fed_env_manager.
+PARTITION_STRATEGY = os.environ.get("PARTITION_STRATEGY", "").strip().lower()
+CLIENT_ID = int(os.environ.get("CLIENT_ID", "0"))
+CLIENT_NUM = int(os.environ.get("CLIENT_NUM", "1"))
+CATALOG_ASINS = None
+CLIENT_GOAL_IDXS = None
+if PARTITION_STRATEGY == "catalog_split":
+    from fedagent.hetero.webshop_catalog_split import catalog_split_for_client
+
+    CATALOG_ASINS, CLIENT_GOAL_IDXS = catalog_split_for_client(
+        CLIENT_ID, CLIENT_NUM,
+        env_div=float(os.environ.get("ENV_DIV", "0.7")),
+        keep_ratio=float(os.environ.get("KEEP_RATIO", "0.7")),
+        min_goals_per_client=int(os.environ.get("MIN_GOALS_PER_CLIENT", "100")),
+        holdout_file=os.environ.get("HOLDOUT_FILE") or None,
+    )
+    print(f"[webshop-service] catalog_split client {CLIENT_ID}/{CLIENT_NUM}: "
+          f"|catalog|={len(CATALOG_ASINS)} |goal_idxs|={len(CLIENT_GOAL_IDXS)}", flush=True)
+
 _pool: asyncio.Queue = None
 _sessions: dict = {}
 
@@ -53,7 +78,10 @@ def _make_env(seed: int):
     import gym
     from web_agent_site.envs import WebAgentTextEnv  # noqa: F401  (registers the gym id)
 
-    return gym.make("WebAgentTextEnv-v0", **dict(ENV_KWARGS, seed=seed))
+    kw = dict(ENV_KWARGS, seed=seed)
+    if CATALOG_ASINS is not None:
+        kw["catalog_filter_asins"] = CATALOG_ASINS  # restrict search/click to this client's catalog
+    return gym.make("WebAgentTextEnv-v0", **kw)
 
 
 def _avail(env) -> dict:
@@ -98,7 +126,14 @@ class StepReq(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "free": _pool.qsize() if _pool else 0, "sessions": len(_sessions)}
+    return {
+        "ok": True,
+        "free": _pool.qsize() if _pool else 0,
+        "sessions": len(_sessions),
+        "client_id": CLIENT_ID,
+        "partition": PARTITION_STRATEGY or "none",
+        "catalog_size": len(CATALOG_ASINS) if CATALOG_ASINS is not None else None,
+    }
 
 
 @app.post("/create")
@@ -115,7 +150,11 @@ async def reset(r: ResetReq):
         raise HTTPException(404, "unknown session")
 
     def _do():
-        res = env.reset(session=int(r.seed) % NUM_GOALS)
+        if CLIENT_GOAL_IDXS:
+            sess = CLIENT_GOAL_IDXS[int(r.seed) % len(CLIENT_GOAL_IDXS)]  # stay in this client's goal slice
+        else:
+            sess = int(r.seed) % NUM_GOALS
+        res = env.reset(session=sess)
         obs = res[0] if isinstance(res, tuple) else res
         return obs, _avail(env)
 

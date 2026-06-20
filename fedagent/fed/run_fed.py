@@ -66,6 +66,17 @@ DEFAULTS = {
     "save_freq": 1,
     "weights": "",                          # "" => uniform FedAvg
     "wait_between_clients": 5,              # seconds; let Ray/GPU fully release
+    "client_overrides": [],                 # extra `key=value` Hydra overrides per client (env-specific)
+    # --- env_kind=webshop: per-client remote env services + Catalog-Split heterogeneity ---
+    "env_kind": "tinyguess",                # "tinyguess" (in-process env) | "webshop" (remote service)
+    "webshop_run_service": str(PKG_DIR / "webshop_service" / "run_service.sh"),
+    "webshop_base_port": 8080,              # client c's service -> webshop_base_port + c
+    "webshop_pool_size": 8,                 # env pool per service (must be >= gen_batch)
+    "partition_strategy": "",               # "" | "catalog_split" (env-level heterogeneity)
+    "env_div": 0.7,                         # catalog-split heterogeneity strength
+    "keep_ratio": 0.7,                      # catalog-split distractor density
+    "min_goals_per_client": 100,
+    "service_health_timeout": 900,          # seconds to wait for a service /health
 }
 
 
@@ -150,6 +161,87 @@ def stream(cmd: List[str], env: dict, log_path: Path, tag: str) -> int:
     return proc.returncode
 
 
+# ----------------------------------------------------------------- webshop services
+def webshop_service_url(cfg, client_id: int) -> str:
+    return f"http://localhost:{cfg.webshop_base_port + client_id}"
+
+
+def start_webshop_services(cfg, env_base: dict) -> List[dict]:
+    """Launch ONE WebShop remote service per client (Design A: one service == one
+    client's environment / hidden transition kernel). Each service builds its whole
+    env pool with that client's Catalog-Split variant (via env-var bridge). Returns
+    handles for teardown. Raises if any service fails to come up healthy."""
+    import urllib.request
+
+    services = []
+    for c in range(cfg.total_clients):
+        port = cfg.webshop_base_port + c
+        env = dict(env_base)
+        env.update({
+            "WEBSHOP_PORT": str(port),
+            "WEBSHOP_POOL_SIZE": str(cfg.webshop_pool_size),
+            "PARTITION_STRATEGY": cfg.partition_strategy or "",
+            "CLIENT_ID": str(c),
+            "CLIENT_NUM": str(cfg.total_clients),
+            "ENV_DIV": str(cfg.env_div),
+            "KEEP_RATIO": str(cfg.keep_ratio),
+            "MIN_GOALS_PER_CLIENT": str(cfg.min_goals_per_client),
+        })
+        log_path = Path(cfg.output_dir) / f"webshop_service_client{c}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        lf = open(log_path, "w")
+        log(f"starting WebShop service client {c} on :{port} "
+            f"(pool={cfg.webshop_pool_size}, partition={cfg.partition_strategy or 'none'}, "
+            f"env_div={cfg.env_div})  (log: {log_path})")
+        proc = subprocess.Popen(["bash", str(cfg.webshop_run_service)], env=env,
+                                stdout=lf, stderr=subprocess.STDOUT)
+        services.append({"client_id": c, "port": port, "proc": proc, "log": log_path, "lf": lf})
+
+    # wait for each to report /health (pool warmup of WebShop envs takes minutes)
+    for s in services:
+        url = f"http://localhost:{s['port']}/health"
+        deadline_polls = int(cfg.service_health_timeout / 3)
+        up = False
+        for _ in range(deadline_polls):
+            if s["proc"].poll() is not None:
+                raise RuntimeError(f"WebShop service client {s['client_id']} DIED; see {s['log']}")
+            try:
+                with urllib.request.urlopen(url, timeout=3) as r:
+                    import json as _json
+                    d = _json.loads(r.read())
+                log(f"WebShop service client {s['client_id']} healthy on :{s['port']} "
+                    f"(partition={d.get('partition')}, catalog_size={d.get('catalog_size')})")
+                up = True
+                break
+            except Exception:
+                time.sleep(3)
+        if not up:
+            raise RuntimeError(f"WebShop service client {s['client_id']} health timeout; see {s['log']}")
+    return services
+
+
+def stop_webshop_services(services: List[dict]):
+    for s in services or []:
+        try:
+            s["proc"].terminate()
+        except Exception:
+            pass
+    for s in services or []:
+        try:
+            s["proc"].wait(timeout=15)
+        except Exception:
+            try:
+                s["proc"].kill()
+            except Exception:
+                pass
+        try:
+            s["lf"].close()
+        except Exception:
+            pass
+    if services:
+        log(f"stopped {len(services)} WebShop service(s)")
+
+
 # ----------------------------------------------------------------- stages
 def select_clients(round_num: int, total: int, per_round: int, base_seed: int) -> List[int]:
     """Deterministic per-round client selection (seed = base_seed + round - 1), matching
@@ -182,10 +274,14 @@ def run_client(cfg, round_num: int, client_id: int, model_path: str,
         f"trainer.project_name=fedagent_fed",
         f"trainer.experiment_name=round{round_num}_client{client_id}",
     ]
+    cmd += [str(o) for o in (cfg.client_overrides or [])]   # env-specific Hydra overrides
     env = dict(env_base)
     # distinct, reproducible env instances per client (AgenticDataset reads this);
     # round-invariant so a client's task distribution is stable across rounds.
     env["FEDAGENT_BASE_SEED"] = str(cfg.base_seed + client_id)
+    if cfg.env_kind == "webshop":
+        # talk to THIS client's WebShop service (its disjoint Catalog-Split env)
+        env["WEBSHOP_SERVICE_URL"] = webshop_service_url(cfg, client_id)
 
     log_path = ckpt_root.parent / "training.log"
     rc = stream(cmd, env, log_path, tag=f"r{round_num}c{client_id}")
@@ -273,37 +369,48 @@ def run(cfg) -> dict:
     if not AGGREGATOR.is_file():
         raise FileNotFoundError(f"aggregator not found: {AGGREGATOR}")
 
-    history = []
-    current_model = base_model
-    for r in range(1, cfg.total_rounds + 1):
-        selected = select_clients(r, cfg.total_clients, cfg.clients_per_round, cfg.base_seed)
-        banner(f"ROUND {r}/{cfg.total_rounds}  |  clients={selected}  |  "
-               f"model={'BASE' if r == 1 else 'round %d aggregated' % (r - 1)}")
-        log(f"round {r} starting model: {current_model}")
+    services = []
+    if cfg.env_kind == "webshop":
+        log(f"env_kind=webshop -> starting {cfg.total_clients} per-client services "
+            f"(partition={cfg.partition_strategy or 'none'}, env_div={cfg.env_div})")
+        services = start_webshop_services(cfg, env_base)
 
-        client_actors = []
-        for c in selected:
-            client_actors.append(run_client(cfg, r, c, current_model, env_base))
-            if c != selected[-1] and cfg.wait_between_clients > 0:
-                time.sleep(cfg.wait_between_clients)
+    try:
+        history = []
+        current_model = base_model
+        for r in range(1, cfg.total_rounds + 1):
+            selected = select_clients(r, cfg.total_clients, cfg.clients_per_round, cfg.base_seed)
+            banner(f"ROUND {r}/{cfg.total_rounds}  |  clients={selected}  |  "
+                   f"model={'BASE' if r == 1 else 'round %d aggregated' % (r - 1)}")
+            log(f"round {r} starting model: {current_model}")
 
-        agg_actor = fedavg(cfg, r, client_actors, env_base)
-        hf_dir = merge_to_hf(cfg, r, agg_actor, env_base)
+            client_actors = []
+            for c in selected:
+                client_actors.append(run_client(cfg, r, c, current_model, env_base))
+                if c != selected[-1] and cfg.wait_between_clients > 0:
+                    time.sleep(cfg.wait_between_clients)
 
-        history.append({
-            "round": r, "clients": selected,
-            "started_from": current_model,
-            "client_actors": [str(a) for a in client_actors],
-            "aggregated_actor": str(agg_actor),
-            "aggregated_hf": str(hf_dir),
-        })
-        current_model = str(hf_dir)   # <-- the loop closes here: next round trains from this
+            agg_actor = fedavg(cfg, r, client_actors, env_base)
+            hf_dir = merge_to_hf(cfg, r, agg_actor, env_base)
+
+            history.append({
+                "round": r, "clients": selected,
+                "started_from": current_model,
+                "client_actors": [str(a) for a in client_actors],
+                "aggregated_actor": str(agg_actor),
+                "aggregated_hf": str(hf_dir),
+            })
+            current_model = str(hf_dir)   # <-- the loop closes here: next round trains from this
+    finally:
+        stop_webshop_services(services)
 
     summary = {
         "total_clients": cfg.total_clients,
         "clients_per_round": cfg.clients_per_round,
         "total_rounds": cfg.total_rounds,
         "epochs_per_round": cfg.epochs_per_round,
+        "env_kind": cfg.env_kind,
+        "partition_strategy": cfg.partition_strategy or "none",
         "base_model": base_model,
         "final_model": current_model,
         "rounds": history,
@@ -333,6 +440,11 @@ def load_cfg(args) -> "OmegaConf":
     if args.clients is not None:
         cfg.total_clients = args.clients
         cfg.clients_per_round = min(cfg.clients_per_round, args.clients)
+    # resolve package-relative paths (so configs can use e.g. config/envs/webshop.yaml)
+    for key in ("env_spec", "custom_cls_path", "agent_config_path", "webshop_run_service"):
+        v = cfg.get(key)
+        if v and not os.path.isabs(str(v)):
+            cfg[key] = str(PKG_DIR / str(v))
     return cfg
 
 

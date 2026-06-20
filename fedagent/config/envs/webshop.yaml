@@ -7,5 +7,7 @@ envs:
     max_turns: 6
     agent_name: gym_text
     config:
-      service_url: http://localhost:8080
+      # service URL comes from the WEBSHOP_SERVICE_URL env var (set per-client by the
+      # federated runner / by the smoke launcher); not pinned here so each client can
+      # talk to its own Catalog-Split service.
       timeout: 120.0
