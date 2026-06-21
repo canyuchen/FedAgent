@@ -295,6 +295,14 @@ def run_client(cfg, round_num: int, client_id: int, model_path: str,
             f"see {log_path}"
         )
     log(f"client {client_id} round {round_num} OK -> {actor}")
+    # measurability: post-process the training.log into json_logs/metrics.json
+    # (FedAgent plot format) and echo the per-step reward curve.
+    try:
+        from fedagent.fed.metrics_logger import parse_training_log, summarize, write_metrics_json
+        write_metrics_json(log_path, ckpt_root.parent / "json_logs")
+        log(f"client {client_id} round {round_num} reward: {summarize(parse_training_log(log_path))}")
+    except Exception as e:
+        log(f"[warn] metrics parse r{round_num}c{client_id}: {e}")
     return actor
 
 

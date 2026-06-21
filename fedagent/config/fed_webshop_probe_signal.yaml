@@ -1,0 +1,39 @@
+# SIGNAL PROBE: does a capable model get NONZERO reward on WebShop @ 15 turns?
+# Single client, single round, NO heterogeneity (baseline). 1 service, a few PPO
+# steps, larger context for 15-turn concat episodes. Read verl's reward metric from
+# the client training.log. If reward > 0 here, the env produces real signal and a
+# scaled federated env- vs task-heterogeneity run is worth launching.
+#
+# Run:  python -m fedagent.fed.run_fed --config <this> --model-path <Qwen2.5-1.5B dir>
+
+env_kind: webshop
+env_spec: config/envs/webshop_15.yaml
+output_dir: /tmp/xbb9020_fedagent_webshop_probe
+# capable model (vs the 0.5B smoke default) so the agent can actually shop in 15 turns
+model_path: /projects/b1222/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+
+total_clients: 1
+clients_per_round: 1
+total_rounds: 1
+epochs_per_round: 1
+base_seed: 42
+
+n_gpus_per_node: 2
+total_training_steps: 4            # a few steps -> a few reward readings (step 1 ~= baseline)
+save_freq: 4
+wait_between_clients: 5
+
+partition_strategy: ""             # baseline: full catalog, no env heterogeneity
+webshop_pool_size: 16              # >= gen_batch (train_batch_size 8 x rollout.n 2 = 16)
+webshop_base_port: 8090
+
+client_overrides:
+  - data.train_batch_size=8
+  - data.max_prompt_length=2048
+  - data.max_response_length=6144           # room for 15-turn action+observation concat
+  - actor_rollout_ref.actor.ppo_mini_batch_size=8
+  - actor_rollout_ref.rollout.n=2
+  - actor_rollout_ref.rollout.prompt_length=2048
+  - actor_rollout_ref.rollout.response_length=6144
+  - actor_rollout_ref.rollout.max_model_len=8192
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.6

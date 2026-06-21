@@ -1,0 +1,10 @@
+# WebShop env-spec at the paper's 15-step budget (vs the 6-turn smoke spec).
+# Used for signal probes / real runs where the agent needs enough turns to search,
+# inspect, customize, and buy. Service URL comes from WEBSHOP_SERVICE_URL.
+envs:
+  - name: WebShop
+    n_envs: 32
+    max_turns: 15
+    agent_name: gym_text
+    config:
+      timeout: 180.0

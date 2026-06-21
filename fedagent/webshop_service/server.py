@@ -57,18 +57,24 @@ CLIENT_ID = int(os.environ.get("CLIENT_ID", "0"))
 CLIENT_NUM = int(os.environ.get("CLIENT_NUM", "1"))
 CATALOG_ASINS = None
 CLIENT_GOAL_IDXS = None
-if PARTITION_STRATEGY == "catalog_split":
+# catalog_split = disjoint goal slice + disjoint catalog (ENV heterogeneity, hidden P_i).
+# task_disjoint = the SAME disjoint goal slice but FULL catalog (TASK heterogeneity only,
+#   observable in the goals). The two differ ONLY by the catalog filter -> a clean
+#   ablation of the env effect with the task partition held fixed.
+if PARTITION_STRATEGY in ("catalog_split", "task_disjoint"):
     from fedagent.hetero.webshop_catalog_split import catalog_split_for_client
 
-    CATALOG_ASINS, CLIENT_GOAL_IDXS = catalog_split_for_client(
+    _catalog, CLIENT_GOAL_IDXS = catalog_split_for_client(
         CLIENT_ID, CLIENT_NUM,
         env_div=float(os.environ.get("ENV_DIV", "0.7")),
         keep_ratio=float(os.environ.get("KEEP_RATIO", "0.7")),
         min_goals_per_client=int(os.environ.get("MIN_GOALS_PER_CLIENT", "100")),
         holdout_file=os.environ.get("HOLDOUT_FILE") or None,
     )
-    print(f"[webshop-service] catalog_split client {CLIENT_ID}/{CLIENT_NUM}: "
-          f"|catalog|={len(CATALOG_ASINS)} |goal_idxs|={len(CLIENT_GOAL_IDXS)}", flush=True)
+    CATALOG_ASINS = _catalog if PARTITION_STRATEGY == "catalog_split" else None  # task_disjoint -> full catalog
+    print(f"[webshop-service] {PARTITION_STRATEGY} client {CLIENT_ID}/{CLIENT_NUM}: "
+          f"|catalog|={len(CATALOG_ASINS) if CATALOG_ASINS is not None else 'FULL'} "
+          f"|goal_idxs|={len(CLIENT_GOAL_IDXS)}", flush=True)
 
 _pool: asyncio.Queue = None
 _sessions: dict = {}
