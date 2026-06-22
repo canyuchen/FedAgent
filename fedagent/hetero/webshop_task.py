@@ -146,19 +146,32 @@ def preference_for_client(
     min_goals_per_client: int = 100,
     base_seed: int = 42,  # noqa: ARG001 (verbatim fn hardcodes 42; kept for API symmetry)
     start_idx: int = 500,
+    env_goals: Optional[List[Any]] = None,
     data_dir: Optional[str] = None,
 ) -> List[int]:
     """This client's WebShop goal indices under Preference(omega) -- full catalog (task-only).
 
-    Builds goal->category (goal i -> asin i via the catalog-split goal generator -> product
-    `category`), Dirichlet-partitions the train pool (goals[start_idx:]) by category, and
-    returns the selected ABSOLUTE goal indices.
+    Dirichlet-partitions the train pool (goals[start_idx:]) by `category` and returns the
+    selected ABSOLUTE goal indices.
+
+    `env_goals` (REQUIRED for science): the env's ACTUAL `server.goals` list (seed-42
+    shuffled dicts, each carrying `category`). The original verl-agent partitions THIS list
+    (envs.py: `partition_dataset(data=goals, ...)` then `goals.index(goal)`), so the served
+    goal at index i has the category the partition selected. The env's shuffle is reproducible
+    run-to-run and identical across clients (goals come from the full product pool; catalog
+    filter does not perturb the RNG -- GPU-verified), so partitioning server.goals here
+    reproduces the original's selection exactly. The `data_dir` fallback (reconstructed
+    UNSHUFFLED order) is for offline tests ONLY and is NOT order-faithful.
     """
-    products, ins = load_webshop_data(data_dir)
-    goal_asins = _generate_goal_asins_for_partition(products, ins)
-    asin_to_cat = {p["asin"]: p.get("category", "unknown") for p in products}
-    # tag every goal with its absolute index + category; partition the train pool only
-    goals = [{"category": asin_to_cat.get(a, "unknown"), "_idx": i} for i, a in enumerate(goal_asins)]
+    if env_goals is not None:
+        # FAITHFUL path: partition the env's real shuffled goals (carry the absolute index).
+        goals = [dict(g, _idx=i) for i, g in enumerate(env_goals)]
+    else:
+        products, ins = load_webshop_data(data_dir)
+        goal_asins = _generate_goal_asins_for_partition(products, ins)
+        asin_to_cat = {p["asin"]: p.get("category", "unknown") for p in products}
+        # tag every goal with its absolute index + category; partition the train pool only
+        goals = [{"category": asin_to_cat.get(a, "unknown"), "_idx": i} for i, a in enumerate(goal_asins)]
     selected = _preference_partition_generic(
         data=goals[start_idx:],
         client_id=client_id,
@@ -169,5 +182,6 @@ def preference_for_client(
     )
     idxs = sorted(g["_idx"] for g in selected)
     print(f"[task pref] WebShop client {client_id}/{client_num}: |goal_idxs|={len(idxs)} "
-          f"(omega={omega}, full catalog)", flush=True)
+          f"(omega={omega}, full catalog, src={'env.server.goals' if env_goals is not None else 'reconstructed'})",
+          flush=True)
     return idxs

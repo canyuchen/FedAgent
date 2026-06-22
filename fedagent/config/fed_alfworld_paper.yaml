@@ -1,0 +1,47 @@
+# PAPER-FAITHFUL ALFWorld federated run (the 2nd environment). Game-shard heterogeneity:
+# each client gets a disjoint slice of the train games (a distinct hidden transition kernel
+# P_i), aggregated with FedAvg each round. Unperturbed validation on the 274 in-distribution
+# eval games every test_freq=5 rounds; per-task-type breakdown (Pick/Look/Clean/Heat/Cool/
+# Pick2) via tools/verl08_migration/eval_alfworld_by_tasktype.py on the final model.
+#
+# ALFWorld has ~3.5k solvable train games, so the client count is smaller than WebShop's 100
+# (min_goals_per_client=100 => up to ~35 clients); 8 clients x 2/round keeps >=100 games each.
+# Protocol otherwise matches the paper: E=3, T=70, 4-GPU FSDP. Qwen2.5-1.5B @ 12-turn budget.
+
+env_kind: alfworld
+env_spec: config/envs/alfworld.yaml
+val_env_spec: config/envs/alfworld_val.yaml          # unperturbed 274-game in-distribution eval
+output_dir: /tmp/xbb9020_fedpaper_alfworld
+model_path: /projects/b1222/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+
+total_clients: 8
+clients_per_round: 2
+total_rounds: 70
+epochs_per_round: 3
+base_seed: 42                                        # 3-seed replication: --base-seed 43/44
+
+n_gpus_per_node: 4
+total_training_steps: 0                              # full E epochs/round
+save_freq: 100000                                   # >steps/round => save only the last step (save_freq<=0 never saves)
+test_freq: 5
+val_before_train: true
+val_temperature: 0.4
+wait_between_clients: 8
+
+partition_strategy: env_disjoint                     # disjoint per-client game shards (env-het; ALFWorld analog of catalog_split)
+alfworld_train_eval: train
+alfworld_val_split: eval_in_distribution
+min_goals_per_client: 100
+alfworld_pool_size: 16
+alfworld_base_port: 8200
+
+client_overrides:
+  - data.train_batch_size=8
+  - data.max_prompt_length=2048
+  - data.max_response_length=4096
+  - actor_rollout_ref.actor.ppo_mini_batch_size=8
+  - actor_rollout_ref.rollout.n=2
+  - actor_rollout_ref.rollout.prompt_length=2048
+  - actor_rollout_ref.rollout.response_length=4096
+  - actor_rollout_ref.rollout.max_model_len=8192
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.5

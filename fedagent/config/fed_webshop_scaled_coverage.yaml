@@ -1,0 +1,38 @@
+# TASK-heterogeneity, Coverage (paper symbol xi): Beta-sized goal coverage per client,
+# FULL catalog (env unperturbed) -- a faithful task arm alongside Preference(omega).
+# Pairs with task_disjoint/preference as the FedAvg-robust task reference. Verbatim
+# coverage_partition (fedagent/hetero/webshop_coverage.py). Qwen2.5-1.5B @ 15 turns, 2x4.
+# Robust single-run recipe baked in: n_gpus_per_node=4, pool 16 (32 envs ~448GB < 900GB).
+
+env_kind: webshop
+env_spec: config/envs/webshop_15.yaml
+output_dir: /tmp/xbb9020_fedagent_scaled_coverage
+model_path: /projects/b1222/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+
+total_clients: 2
+clients_per_round: 2
+total_rounds: 4
+epochs_per_round: 1
+base_seed: 42
+
+n_gpus_per_node: 4
+total_training_steps: 4
+save_freq: 4
+wait_between_clients: 8
+
+partition_strategy: coverage          # task-het: Beta-sized goal coverage, FULL catalog
+size_std: 1.0                         # Beta dispersion (xi); paper sweeps low/high dispersion
+min_goals_per_client: 100
+webshop_pool_size: 16
+webshop_base_port: 8100               # distinct from catalog(8080)/task(8082)/homog(8084)/pref(8088)
+
+client_overrides:
+  - data.train_batch_size=8
+  - data.max_prompt_length=2048
+  - data.max_response_length=6144
+  - actor_rollout_ref.actor.ppo_mini_batch_size=8
+  - actor_rollout_ref.rollout.n=2
+  - actor_rollout_ref.rollout.prompt_length=2048
+  - actor_rollout_ref.rollout.response_length=6144
+  - actor_rollout_ref.rollout.max_model_len=8192
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.6

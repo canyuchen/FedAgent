@@ -1,0 +1,44 @@
+# TASK-heterogeneity, Hardness (paper symbol xi'): Beta-allocated easy/hard goals per
+# client, FULL catalog (env unperturbed). Verbatim hardness_partition
+# (fedagent/hetero/webshop_hardness.py). Qwen2.5-1.5B @ 15 turns, 2x4.
+#
+# BLOCKED until a trajectories file exists: hardness REQUIRES `trajectories_file`
+# (task_id -> success labels) to grade goal difficulty. Generate one with:
+#   python -m tools.verl08_migration.gen_hardness_trajectories \
+#       --config fedagent/config/fed_webshop_scaled_hardness.yaml --model <ref hf> \
+#       --num-goals 6410 --output fedagent/data/hardness/webshop_trajectories_qwen1.5b.json
+# then set trajectories_file below. Without it the service raises FileNotFoundError (by design).
+
+env_kind: webshop
+env_spec: config/envs/webshop_15.yaml
+output_dir: /tmp/xbb9020_fedagent_scaled_hardness
+model_path: /projects/b1222/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+
+total_clients: 2
+clients_per_round: 2
+total_rounds: 4
+epochs_per_round: 1
+base_seed: 42
+
+n_gpus_per_node: 4
+total_training_steps: 4
+save_freq: 4
+wait_between_clients: 8
+
+partition_strategy: hardness          # task-het: Beta easy/hard split, FULL catalog
+success_std: 1.0                      # Beta dispersion (xi')
+trajectories_file: ""                 # REQUIRED: set to a task_id->success JSON before running
+min_goals_per_client: 100
+webshop_pool_size: 16
+webshop_base_port: 8102
+
+client_overrides:
+  - data.train_batch_size=8
+  - data.max_prompt_length=2048
+  - data.max_response_length=6144
+  - actor_rollout_ref.actor.ppo_mini_batch_size=8
+  - actor_rollout_ref.rollout.n=2
+  - actor_rollout_ref.rollout.prompt_length=2048
+  - actor_rollout_ref.rollout.response_length=6144
+  - actor_rollout_ref.rollout.max_model_len=8192
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.6

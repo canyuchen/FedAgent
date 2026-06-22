@@ -1,19 +1,20 @@
 """Environment registry: ``env_name`` (carried on each dataset row) -> env class.
 
 The agent-loop looks up the env class by the ``env_name`` of the dataset row it is
-driving. New envs register here:
-  - Phase 2: ``WebShop`` (remote env service)
-  - Phase 3: ``ALFWorld``
+driving. New envs register here: ``TinyGuess`` (in-process), ``WebShop`` / ``ALFWorld``
+(thin HTTP clients to their per-env ``service/`` backends).
 """
 from typing import Any, Dict, Optional, Type
 
+from fedagent.envs.alfworld import AlfworldEnv
 from fedagent.envs.base import BaseTextEnv
 from fedagent.envs.tiny_guess import TinyGuessEnv
 from fedagent.envs.webshop import WebShopEnv
 
 ENV_REGISTRY: Dict[str, Type[BaseTextEnv]] = {
     "TinyGuess": TinyGuessEnv,
-    "WebShop": WebShopEnv,  # HTTP client -> webshop_service (verl-agent-webshop env)
+    "WebShop": WebShopEnv,  # HTTP client -> envs/webshop/service (verl-agent-webshop env)
+    "ALFWorld": AlfworldEnv,  # HTTP client -> envs/alfworld/service (verl-agent-alfworld env)
 }
 
 

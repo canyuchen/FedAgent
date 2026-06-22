@@ -59,9 +59,9 @@ def maybe_enable_from_env() -> bool:
 
 
 def worker_setup():
-    """Ray worker_process_setup_hook entry: runs in EVERY Ray worker at startup so the
-    actor-engine worker (separate process from the agent-loop workers) gets the patch.
-    Gated on FEDPROX_MU, so it is a no-op for plain FedAvg runs. Wire via the Hydra
-    config: ray_kwargs.ray_init.runtime_env.worker_process_setup_hook=fedagent.fedprox.worker_setup
-    """
+    """Legacy Ray worker_process_setup_hook entry. SUPERSEDED by the repo-root
+    ``sitecustomize.py``: wiring this as ``ray_init.runtime_env.worker_process_setup_hook``
+    clobbered verl's per-worker ``CUDA_VISIBLE_DEVICES`` (all FSDP ranks -> GPU 0,
+    "Duplicate GPU detected"). FedProx is now injected via ``sitecustomize`` (interpreter
+    startup, no runtime_env), so this is kept only for back-compat / manual use."""
     maybe_enable_from_env()

@@ -1,5 +1,5 @@
 # WebShop env-spec for AgenticDataset. Each row is one episode (distinct goal via seed).
-# The env is an HTTP client to the WebShop service (see fedagent/webshop_service/).
+# The env is an HTTP client to the WebShop service (see fedagent/envs/webshop/service/).
 # Smoke uses small n_envs/max_turns; the research config is max_turns=15.
 envs:
   - name: WebShop

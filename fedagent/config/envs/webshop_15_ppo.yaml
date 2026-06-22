@@ -1,0 +1,12 @@
+# WebShop env-spec for PPO arms (15-step budget). Identical to webshop_15.yaml EXCEPT
+# n_envs=64 == the original PPO train_data_size (config/uniform/.../ppo/*.yaml:119). With the
+# PPO data.train_batch_size=64 this is 1 optimizer step/epoch, so E=3 epochs => 3 local
+# updates/round (matches the original PPO recipe; PPO deliberately used batch 64 vs GRPO 8).
+# Goals are drawn per (round,client) via the round-threaded FEDAGENT_BASE_SEED (run_fed).
+envs:
+  - name: WebShop
+    n_envs: 64
+    max_turns: 15
+    agent_name: gym_text
+    config:
+      timeout: 180.0

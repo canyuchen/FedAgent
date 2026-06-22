@@ -22,9 +22,9 @@ conda activate fedagent-verl08                      # trainer env (parent shell:
 SVC_LOG=/tmp/xbb9020_webshop_service.log
 rm -f "$SVC_LOG"
 WEBSHOP_PORT="$PORT" WEBSHOP_POOL_SIZE="$WEBSHOP_POOL_SIZE" \
-  bash "$PKG_DIR/webshop_service/run_service.sh" > "$SVC_LOG" 2>&1 &
+  bash "$PKG_DIR/envs/webshop/service/run_service.sh" > "$SVC_LOG" 2>&1 &
 SVC_PID=$!
-cleanup() { kill "$SVC_PID" 2>/dev/null; pkill -f "fedagent.webshop_service.server" 2>/dev/null; }
+cleanup() { kill "$SVC_PID" 2>/dev/null; pkill -f "fedagent.envs.webshop.service.server" 2>/dev/null; }
 trap cleanup EXIT
 
 # --- 2. wait for health (warmup of the env pool can take a couple of minutes) ---

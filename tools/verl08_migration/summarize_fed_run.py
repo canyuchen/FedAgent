@@ -8,8 +8,22 @@ table -- e.g. the A/B/C decomposition:
     catalog_split (env+task het) vs task_disjoint (task het) vs homogeneous (IID).
 A-B isolates the env-heterogeneity effect, B-C the task-heterogeneity effect.
 
+Beyond the per-round table this also reports, for the COMPOUNDING question:
+  * per-condition TREND -- least-squares slope of round-mean reward vs round index, plus
+    the first->last delta (does federated reward climb over rounds, or stay flat?);
+  * the ASYMMETRY TRAJECTORY -- A-B (env effect) and B-C (task effect) at EVERY round and
+    their slopes (does env heterogeneity degrade CUMULATIVELY relative to task/IID, the
+    Input-Dynamics Asymmetry, or is the gap round-independent?).
+
+The 3 conditions for the decomposition default to labels A,B,C; override with
+    --decomp=ENVLABEL,TASKLABEL,IIDLABEL
+so the real run labels can be used, e.g.:
+    --decomp=envhet,task,homog
+
 Run on the node where the logs live (compute node /tmp):
     python summarize_fed_run.py A=/tmp/.../scaled_env B=/tmp/.../scaled_task C=/tmp/.../scaled_homog
+    python summarize_fed_run.py envhet=/tmp/...envhet task=/tmp/...task homog=/tmp/...homog \
+        --decomp=envhet,task,homog
 """
 import glob
 import os
@@ -37,12 +51,42 @@ def run_rounds(run_dir, key):
     return rounds
 
 
+def round_mean(rr, r):
+    """mean over clients of the round's step-averaged reward, or None if absent."""
+    v = rr.get(r, {})
+    if not v:
+        return None
+    means = [x[0] for x in v.values()]
+    return sum(means) / len(means)
+
+
+def lin_slope(pairs):
+    """least-squares slope of y vs x for [(x,y), ...]; None if <2 points."""
+    pts = [(x, y) for x, y in pairs if y is not None]
+    n = len(pts)
+    if n < 2:
+        return None
+    sx = sum(x for x, _ in pts)
+    sy = sum(y for _, y in pts)
+    sxx = sum(x * x for x, _ in pts)
+    sxy = sum(x * y for x, y in pts)
+    denom = n * sxx - sx * sx
+    if denom == 0:
+        return None
+    return (n * sxy - sx * sy) / denom
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     key = KEY
+    decomp = ("A", "B", "C")
     for a in sys.argv[1:]:
         if a.startswith("--key="):
             key = a.split("=", 1)[1]
+        elif a.startswith("--decomp="):
+            parts = a.split("=", 1)[1].split(",")
+            if len(parts) == 3:
+                decomp = tuple(p.strip() for p in parts)
     runs = {}
     for a in args:
         label, _, d = a.partition("=")
@@ -64,16 +108,56 @@ def main():
                 cells.append("-")
         print(f"{r:>5} | " + " | ".join(f"{c:>18}" for c in cells))
 
-    # final-round deltas (the decomposition), if A/B/C present
-    if {"A", "B", "C"} <= set(runs) and all_rounds:
-        rlast = all_rounds[-1]
-        def m(lbl):
-            v = runs[lbl].get(rlast, {})
-            return sum(x[0] for x in v.values()) / len(v) if v else float("nan")
-        a, b, c = m("A"), m("B"), m("C")
-        print(f"\nfinal round {rlast}:  A(env+task)={a:.3f}  B(task)={b:.3f}  C(iid)={c:.3f}")
-        print(f"  env-het effect  (A-B) = {a-b:+.3f}   <- negative => env heterogeneity HURTS under FedAvg")
-        print(f"  task-het effect (B-C) = {b-c:+.3f}   <- ~0 => task heterogeneity is FedAvg-robust")
+    # per-condition compounding trend: slope of round-mean over rounds + first->last
+    print("\ncompounding trend (round-mean reward vs round):")
+    for lbl, rr in runs.items():
+        rs = sorted(rr)
+        if not rs:
+            print(f"  {lbl:>18}: (no data)")
+            continue
+        slope = lin_slope([(r, round_mean(rr, r)) for r in rs])
+        first, last = round_mean(rr, rs[0]), round_mean(rr, rs[-1])
+        slope_s = f"{slope:+.4f}/round" if slope is not None else "n/a"
+        print(f"  {lbl:>18}: R{rs[0]}={first:.3f} -> R{rs[-1]}={last:.3f}  "
+              f"(delta {last-first:+.3f}, slope {slope_s})")
+
+    # asymmetry trajectory (env effect A-B, task effect B-C) at EVERY round + slopes
+    Lenv, Ltask, Liid = decomp
+    if {Lenv, Ltask, Liid} <= set(runs):
+        A, B, C = runs[Lenv], runs[Ltask], runs[Liid]
+        print(f"\nasymmetry trajectory  [env={Lenv} (A), task={Ltask} (B), iid={Liid} (C)]")
+        print(f"  A-B = env-het effect (neg => env heterogeneity HURTS under FedAvg)")
+        print(f"  B-C = task-het effect (~0 => task heterogeneity is FedAvg-robust)\n")
+        print("  round |     A-B |     B-C")
+        print("  ------+---------+--------")
+        ab_pairs, bc_pairs = [], []
+        for r in all_rounds:
+            a, b, c = round_mean(A, r), round_mean(B, r), round_mean(C, r)
+            ab = (a - b) if (a is not None and b is not None) else None
+            bc = (b - c) if (b is not None and c is not None) else None
+            ab_pairs.append((r, ab))
+            bc_pairs.append((r, bc))
+            ab_s = f"{ab:+.3f}" if ab is not None else "   -  "
+            bc_s = f"{bc:+.3f}" if bc is not None else "   -  "
+            print(f"  {r:>5} | {ab_s:>7} | {bc_s:>7}")
+        ab_slope, bc_slope = lin_slope(ab_pairs), lin_slope(bc_pairs)
+        ab_sl_s = f"{ab_slope:+.4f}/round" if ab_slope is not None else "n/a"
+        bc_sl_s = f"{bc_slope:+.4f}/round" if bc_slope is not None else "n/a"
+        def interp_env(s):
+            if s is None:
+                return "(need >=2 rounds with all 3 conditions)"
+            return ("env-het gap WIDENS over rounds (cumulative degradation -- the asymmetry)"
+                    if s < -1e-4 else "env-het gap NARROWS over rounds"
+                    if s > 1e-4 else "env-het gap ~flat across rounds")
+        def interp_task(s):
+            if s is None:
+                return "(need >=2 rounds with all 3 conditions)"
+            return ("task-het gap ~flat => FedAvg-robust" if abs(s) <= 1e-3
+                    else "task-het gap drifts (check noise/budget)")
+        print(f"\n  env-effect (A-B) slope over rounds = {ab_sl_s}   <- {interp_env(ab_slope)}")
+        print(f"  task-effect (B-C) slope over rounds = {bc_sl_s}   <- {interp_task(bc_slope)}")
+        print("\n  NOTE: at 4 steps/round the per-round reward is noisy; trust the SIGN + the\n"
+              "  full-8-round slope, not 2-3 round deltas. A-B<0 with |slope| growing is the signal.")
 
 
 if __name__ == "__main__":
