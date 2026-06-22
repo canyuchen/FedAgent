@@ -576,11 +576,12 @@ def run_client(cfg, round_num: int, client_id: int, model_path: str,
     env = dict(env_base)
     # distinct, reproducible env instances per client (AgenticDataset reads this);
     # round-invariant so a client's task distribution is stable across rounds.
-    # Round-threaded data seed: the ORIGINAL fed sampler seeds per (round, client)
-    # (main_ppo_fed.py: federated_seed = base_seed + round_num*1000 + client_id*100), so each
+    # Round-threaded data seed: like the ORIGINAL fed sampler, seed per (round, client) so each
     # client re-draws goals from its FIXED shard every round (covering the shard over T rounds).
-    # Without the round term every client would train on the SAME goals every round. Stride 100
-    # (round) + client_id (<100) is collision-free and keeps AgenticDataset's seed*100000 < 2**32.
+    # (The original used base_seed + round*1000 + client*100; this overlay uses the smaller stride
+    # on the line below -- same round-threading intent, different constants.) Without the round
+    # term every client would train on the SAME goals every round. Stride 100 (round) + client_id
+    # (<100) is collision-free and keeps AgenticDataset's seed*100000 < 2**32.
     env["FEDAGENT_BASE_SEED"] = str(cfg.base_seed + round_num * 100 + client_id)
     if cfg.env_kind == "webshop":
         # talk to THIS client's WebShop service (its disjoint Catalog-Split env)

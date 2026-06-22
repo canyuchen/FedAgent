@@ -157,7 +157,7 @@ python -m fedagent.main_ppo_fed                       (verl stock run_ppo + FedA
        ├─ GymTextAgentLoop (agent-loop registry)      → multi-turn rollout per row
        │     reset → generate → parse action → env.step → repeat (until done / max_turns)
        │     └─ BaseTextEnv: WebShopEnv / AlfworldEnv  → HTTP → remote env service
-       ├─ advantage (GRPO group of G=8, or GAE w/ critic)
+       ├─ advantage (GRPO group of G — base 4, paper arms 8 — or GAE w/ critic)
        └─ actor update → FSDP checkpoint shards
 ```
 

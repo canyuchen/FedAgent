@@ -281,7 +281,7 @@ python -m fedagent.fed.run_fed --config fedagent/config/fed_tinyguess_2cl_2rd.ya
 python -m fedagent.fed.run_fed --config fedagent/config/fed_webshop_homog_long.yaml --rounds 2
 
 # Wrapper (sets env + srun-friendly), forwarding extra flags to run_fed
-bash fedagent/scripts/run_webshop_fed_smoke.sh config/fed_webshop_scaled_homog.yaml \
+bash fedagent/scripts/run_webshop_fed_smoke.sh fedagent/config/fed_webshop_scaled_homog.yaml \
   --base-seed 43 --output-dir /tmp/run_s43 --port-base 8090
 ```
 

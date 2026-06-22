@@ -152,7 +152,7 @@ it changes the **client** update; the server still aggregates by FedAvg.
 | Capability | Key | Where | Source |
 |---|---|---|---|
 | FedAvg (default) | (no key — always runs each round) | — | [`tools/verl08_migration/aggregate_fedavg_fsdp.py`](../../tools/verl08_migration/aggregate_fedavg_fsdp.py) |
-| FedAvg weights | `weights` (`""` → uniform; else comma-separated, sums to 1) | DEFAULTS → `--weights` | [`tools/verl08_migration/aggregate_fedavg_fsdp.py`](../../tools/verl08_migration/aggregate_fedavg_fsdp.py) |
+| FedAvg weights | `weights` (`""` → uniform; else comma-separated, sums to 1) | DEFAULTS (YAML only — no CLI flag) | [`tools/verl08_migration/aggregate_fedavg_fsdp.py`](../../tools/verl08_migration/aggregate_fedavg_fsdp.py) |
 | Merge shards → HF | (auto — `verl.model_merger merge --backend fsdp`) | — | [`fed/run_fed.py`](../fed/run_fed.py) (`merge_to_hf`) |
 | FedProx | `fedprox_mu` (>0 enables; `0` ≡ FedAvg) | DEFAULTS → `--fedprox-mu` | [`fedagent/fedprox.py`](../fedprox.py) |
 

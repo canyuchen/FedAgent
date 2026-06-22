@@ -92,7 +92,7 @@ pip install -r webshop_requirements.txt      # repo root; pins the WebShop stack
 - **A JDK must be on `PATH`.** `pyserini` / `pyjnius` drive a Java/Lucene BM25 index
   over the product catalog. Install one, e.g. `conda install -c conda-forge
   openjdk=21`, or use a system JDK and export `JAVA_HOME`.
-- `webshop_requirements.txt` ends with `-e ./third_party/verl-agent`, so it
+- `webshop_requirements.txt` includes `-e ./third_party/verl-agent`, so it
   installs the vendored verl-agent package editable from the in-tree path (see
   §4) — the WebShop engine and goal data live there, nothing is fetched from PyPI
   for it.
@@ -123,7 +123,7 @@ alfworld-download -f
   be exported** because the bundled `config_tw.yaml` references game/logic/detector
   paths as `$ALFWORLD_DATA/...` (expanded at runtime). Set it to the same directory
   you downloaded into.
-- `alfworld_requirements.txt` likewise ends with `-e ./third_party/verl-agent`
+- `alfworld_requirements.txt` likewise includes `-e ./third_party/verl-agent`
   (vendored engine; see §4). The service builds the `AlfredTWEnv` interface once
   and pools single-instance textworld envs; the trainer never imports ALFWorld.
 
