@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import httpx
 
-from fedagent.envs.base import BaseTextEnv, Obs
+from fedagent.envs.base import BaseTextEnv, Obs, resolve_service_url
 from fedagent.envs.legacy_prompts import build_webshop_obs
 
 # Format instructions (env-level, no per-episode task) -> system message.
@@ -63,14 +63,11 @@ def _extract_task(obs: str) -> str:
 class WebShopEnv(BaseTextEnv):
     def __init__(self, env_config: Optional[Dict[str, Any]] = None):
         super().__init__(env_config)
-        # WEBSHOP_SERVICE_URL (env) is authoritative: the federated runner sets it
-        # PER CLIENT so each client talks to its own Catalog-Split service. The spec's
-        # service_url is only a fallback for ad-hoc single-service use.
-        self.base_url = (
-            os.environ.get("WEBSHOP_SERVICE_URL")
-            or self.env_config.get("service_url")
-            or "http://localhost:8080"
-        ).rstrip("/")
+        # Per-client routing: FEDAGENT_SERVICE_URL_FILE (persistent/cross-round, lever #4) wins;
+        # else WEBSHOP_SERVICE_URL (subprocess path sets it per client); else spec service_url;
+        # else default. See resolve_service_url for why the file beats process-env in persistent mode.
+        self.base_url = resolve_service_url("WEBSHOP_SERVICE_URL", self.env_config,
+                                            "http://localhost:8080")
         self.timeout = float(self.env_config.get("timeout", 120.0))
         self.session_id = uuid4().hex
         self._task = ""
@@ -79,7 +76,10 @@ class WebShopEnv(BaseTextEnv):
         # WINDOWED (faithful) mode: history_length>0 reproduces the paper's per-turn prompt
         # (task + last-N (obs, action) pairs + current obs). 0 (default) = concat mode (per-turn
         # body only; the GymTextAgentLoop supplies history as the growing chat).
-        self._history_length = int(self.env_config.get("history_length", 0))
+        # FEDAGENT_HISTORY_LENGTH (set by run_fed per rollout_mode: windowed=2, concat=0) is
+        # AUTHORITATIVE so ONE shared env spec drives both modes; spec history_length is the fallback.
+        self._history_length = int(os.environ.get("FEDAGENT_HISTORY_LENGTH")
+                                   or self.env_config.get("history_length", 0))
         self._memory: list = []     # [{"text_obs": <raw obs before action>, "action": <projected action>}]
         self._pre_obs = ""          # raw obs that led to the pending action (legacy pre_text_obs)
         self._client: Optional[httpx.AsyncClient] = None

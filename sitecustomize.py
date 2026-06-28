@@ -46,3 +46,16 @@ if _mu > 0:
                 f"sitecustomize: FEDPROX_MU={_mu} and verl is present, but the FedProx deferred "
                 "patch could not be armed -- refusing to run silently as FedAvg."
             )
+
+# Lever #4 (docs/acceleration.md): persistent-trainer worker patch. Same deferral rationale as
+# FedProx (attach to the worker class on verl's first engine_workers import, AFTER Ray sets
+# per-rank CUDA_VISIBLE_DEVICES). Gated on FEDAGENT_PERSISTENT=1 (set only by persistent_main),
+# so normal subprocess/service processes never arm it. verl ABSENT -> N/A (no-op).
+if os.environ.get("FEDAGENT_PERSISTENT") == "1" and importlib.util.find_spec("verl") is not None:
+    from fedagent.fed.persistent_patch import install_deferred_persistent_patch
+
+    if not install_deferred_persistent_patch():
+        raise RuntimeError(
+            "sitecustomize: FEDAGENT_PERSISTENT=1 and verl is present, but the persistent "
+            "worker patch could not be armed -- refusing to run without reload_client_model."
+        )

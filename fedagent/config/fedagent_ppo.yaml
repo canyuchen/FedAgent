@@ -62,6 +62,16 @@ actor_rollout_ref:
     fsdp_config:
       param_offload: true
 
+critic:
+  # Inert under GRPO (adv_estimator=grpo => critic disabled; this block is never read, so the
+  # paper path is byte-unchanged). Only activates under adv_estimator=gae (PPO), where verl
+  # requires the value model's micro-batch to be set explicitly. Mirror the actor's batch
+  # sizes; critic uses the conventional higher value-head lr (1e-5 vs actor 1e-6).
+  optim:
+    lr: 1e-5
+  ppo_mini_batch_size: 8
+  ppo_micro_batch_size_per_gpu: 4
+
 reward_model:
   enable: false
 

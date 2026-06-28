@@ -12,10 +12,35 @@ The old verl-0.3.1 code drove envs in a *batched, synchronous* ``EnvironmentMana
 (one obs dict for the whole batch). verl 0.8's agent-loop is per-row async, so the
 env becomes a single-instance object with ``await``-able reset/step.
 """
+import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 Obs = Dict[str, Any]
+
+
+def resolve_service_url(env_var: str, env_config: Dict[str, Any], default: str) -> str:
+    """Resolve an env-service base URL, in priority order:
+
+    1. ``$FEDAGENT_SERVICE_URL_FILE`` -- persistent/cross-round PER-CLIENT routing (lever #4). When
+       the federated runner trains many clients in ONE process, it rewrites this file with the
+       CURRENT client's service URL before each client's fit(); the shared agent-loop workers (which
+       build the env per episode) read it here, so each client hits its OWN service. Process-env
+       routing can't do this -- one process has one os.environ for all its clients.
+    2. ``$<env_var>`` (e.g. WEBSHOP_SERVICE_URL) -- the subprocess-per-client path sets this.
+    3. ``env_config['service_url']`` -- ad-hoc single-service fallback.
+    4. ``default``.
+    """
+    f = os.environ.get("FEDAGENT_SERVICE_URL_FILE")
+    if f:
+        try:
+            url = Path(f).read_text().strip()
+            if url:
+                return url.rstrip("/")
+        except FileNotFoundError:
+            pass   # driver hasn't written it yet -> fall through to the static sources
+    return (os.environ.get(env_var) or env_config.get("service_url") or default).rstrip("/")
 
 
 class BaseTextEnv(ABC):

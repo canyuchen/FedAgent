@@ -511,9 +511,16 @@ Each run writes everything under the config's `output_dir`:
 - **`round_<r>/client_<c>/json_logs/metrics.json`** — each client's `training.log`
   re-parsed into the FedAgent plot schema (`[{"step", "metrics"}, ...]`).
 - **The unperturbed val success curve** — `eval_global` scores the aggregated
-  global model on the shared unperturbed val service every `test_freq: 5` rounds
-  (plus the final round), with `val_before_train: true` adding the base model as
-  the round-0 point and `val_temperature: 0.4`. The curve lands in
+  global model on the shared unperturbed val service **every round** (the paper's
+  per-round "server-aggregated" red line, one point per round), with
+  `val_before_train: true` adding the base model as the round-0 point and
+  `val_temperature: 0.4`. One eval of the round's aggregated model on the shared
+  val set is the per-round point: since every client of the round starts from the
+  *same* aggregate, this single eval equals the expectation of the paper's
+  per-client `val_before_train`(step-0) average — same curve, a fraction of the
+  rollout cost. `test_freq: 5` is **not** this global eval — it is verl's
+  *within-job* step cadence (with `epochs_per_round` steps/round it only fires
+  `is_last_step`, the per-client "client-end" marks). The curve lands in
   `federated_summary.json` (`val_curve`) and the round-`r` eval dumps live in
   `round_<r>/eval/`.
 

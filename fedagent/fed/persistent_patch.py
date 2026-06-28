@@ -1,0 +1,105 @@
+"""Overlay worker-class patch for lever #4 (persistent trainer; docs/acceleration.md).
+
+Attaches ``ActorRolloutRefWorker.reload_client_model`` -- a ONE_TO_ALL remote method that
+re-points the live actor (+ref) FSDP engines at a new aggregated model dir and rebuilds them
+(fresh weights + fresh optimizer + fresh LR scheduler + dropped FedProx anchor), so ONE
+long-lived RayPPOTrainer can train successive federated clients WITHOUT the per-client
+subprocess cold-start (the measured ~76-88% overhead, docs/acceleration.md §2.6).
+
+Why a DEFERRED import hook (mirrors fedprox.install_deferred_patch): the method must exist on
+the worker CLASS inside every Ray FSDP-worker process, but importing
+``verl.workers.engine_workers`` EAGERLY at interpreter startup pulls in the FSDP engine before
+Ray assigns per-rank ``CUDA_VISIBLE_DEVICES`` -> "Duplicate GPU detected: rank N and rank 0".
+So we arm a one-shot MetaPathFinder that patches the class the moment verl itself imports
+engine_workers (after device assignment). Enabled via env var ``FEDAGENT_PERSISTENT=1``.
+
+Reload primitive -- verified against verl 0.8 source:
+  ``TrainingWorker.reset()`` (engine_workers.py:165) -> ``engine.initialize()``
+  (transformer_impl.py:183) -> ``_build_model_optimizer`` (transformer_impl.py:543):
+    * ``_build_module`` reads ``model_config.local_path`` (transformer_impl.py:252) -> NEW weights
+    * ``_build_optimizer`` (569) -> fresh Adam (zero m/v)
+    * ``_build_lr_scheduler`` (571) -> fresh schedule at step 0
+  The FedProx anchor ``engine._fedprox_w_t`` (fedprox.py:37) lives on the engine instance and
+  SURVIVES initialize() -> we explicitly ``del`` it so the proximal term re-anchors per client.
+"""
+_PATCHED = False
+
+
+def _apply_persistent_patch() -> bool:
+    """Attach reload_client_model onto ActorRolloutRefWorker (idempotent). Runs in the
+    process that is importing engine_workers (driver TaskRunner actor + each FSDP worker)."""
+    global _PATCHED
+    if _PATCHED:
+        return True
+    from verl.single_controller.base.decorator import Dispatch, register
+    from verl.workers.engine_workers import ActorRolloutRefWorker, TrainingWorker
+
+    def _reset_engine(eng, model_local_path):
+        eng.model_config.local_path = model_local_path
+        eng.initialize()  # _build_model_optimizer: new module(new weights)+optimizer+scheduler
+        if hasattr(eng, "_fedprox_w_t"):
+            del eng._fedprox_w_t  # re-anchor FedProx to this client's aggregated model
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reload_client_model(self, model_local_path: str):
+        """Hot-swap the live actor (+ref) engines to a new aggregated model + rebuild them.
+
+        Exactly what a fresh subprocess gets for free: new weights from model_local_path,
+        a fresh optimizer (zero Adam moments), a fresh LR scheduler at step 0, and no stale
+        FedProx anchor. Same-architecture clients -> hf_config/tokenizer stay valid; only the
+        weight source (local_path) changes."""
+        _reset_engine(self.actor.engine, model_local_path)
+        if getattr(self, "ref", None) is not None:
+            _reset_engine(self.ref.engine, model_local_path)  # ref forward_only: weights only
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def reload_critic_model(self, model_local_path: str):
+        """Critic (PPO/gae) counterpart. The critic is a plain TrainingWorker with self.engine
+        (no CriticWorker class in verl 0.8); rebuild the value engine = fresh value weights +
+        fresh critic optimizer/scheduler."""
+        _reset_engine(self.engine, model_local_path)
+
+    ActorRolloutRefWorker.reload_client_model = reload_client_model
+    TrainingWorker.reload_critic_model = reload_critic_model
+    _PATCHED = True
+    print("[persistent] reload_client_model + reload_critic_model attached", flush=True)
+    return True
+
+
+def install_deferred_persistent_patch() -> bool:
+    """Arm a one-shot import hook that patches ActorRolloutRefWorker the moment verl first
+    imports ``verl.workers.engine_workers`` (after Ray sets per-rank CUDA_VISIBLE_DEVICES).
+    Mirrors fedprox.install_deferred_patch. Idempotent; returns True if armed/applied."""
+    import importlib.abc
+    import importlib.util
+    import sys
+
+    if _PATCHED:
+        return True
+    TARGET = "verl.workers.engine_workers"
+    if TARGET in sys.modules:  # already imported -> patch now
+        return _apply_persistent_patch()
+
+    class _PersistentImportHook(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path=None, target=None):
+            if name != TARGET:
+                return None
+            try:
+                sys.meta_path.remove(self)  # one-shot; let the real finders resolve it
+            except ValueError:
+                pass
+            spec = importlib.util.find_spec(TARGET)
+            if spec is not None and spec.loader is not None:
+                _orig_exec = spec.loader.exec_module
+
+                def exec_module(module, _o=_orig_exec):
+                    _o(module)  # run engine_workers body (class now defined, device set)
+                    if not _apply_persistent_patch():
+                        raise RuntimeError("[persistent] deferred patch did not apply")
+
+                spec.loader.exec_module = exec_module
+            return spec
+
+    sys.meta_path.insert(0, _PersistentImportHook())
+    print("[persistent] deferred patch armed (engine_workers import)", flush=True)
+    return True

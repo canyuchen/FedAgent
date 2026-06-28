@@ -1,0 +1,287 @@
+"""PersistentFedTaskRunner -- lever #4 (docs/acceleration.md).
+
+Build RayPPOTrainer + init_workers() ONCE, then loop over a federated PLAN (a list of
+per-client specs) calling ``_reset_for_client`` + the stock ``trainer.fit()`` -- instead of
+the subprocess-per-client cold-start. Each ``fit()`` already does global_steps=0 ->
+update_weights -> [val] -> train -> save (ray_trainer.py:1362), so reusing it per client is
+faithful; the reset reproduces what a fresh subprocess gets for free.
+
+Wired via ``run_ppo(config, task_runner_class=ray.remote(...)(PersistentFedTaskRunner))``
+(main_ppo.py:52,99-101). The plan is read from the JSON file at $FEDAGENT_PERSISTENT_PLAN:
+  [{"client":0,"model_path":...,"critic_path":null,"seed":4200,"out_dir":...,"exp":...}, ...]
+All clients of the plan share the SAME architecture (FedAvg requires identical shapes), so the
+tokenizer/hf_config built once stay valid; only weights (local_path) + data (seed) change.
+"""
+import json
+import os
+import random
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+from omegaconf import OmegaConf, open_dict
+
+from verl.trainer.main_ppo import (
+    TaskRunner,
+    create_rl_dataset,
+    create_rl_sampler,
+    need_critic,
+    need_reference_policy,
+    validate_config,
+)
+from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+
+
+class PersistentFedTaskRunner(TaskRunner):
+    """Train N federated clients against ONE persistent trainer (init_workers once)."""
+
+    def run(self, config):
+        from verl.utils import hf_processor, hf_tokenizer
+        from verl.utils.dataset.rl_dataset import collate_fn
+        from verl.utils.fs import copy_to_local
+
+        OmegaConf.resolve(config)
+        plan = json.load(open(os.environ["FEDAGENT_PERSISTENT_PLAN"]))
+        assert plan, "empty persistent plan"
+        print(f"[persistent] plan: {len(plan)} client(s) -> "
+              f"{[(s['client'], s['seed']) for s in plan]}", flush=True)
+
+        # --- one-time setup (mirrors stock TaskRunner.run, main_ppo.py:244-312) ----------
+        actor_rollout_cls, ray_worker_group_cls = self.add_actor_rollout_worker(config)
+        self.add_critic_worker(config)
+        self.add_reward_model_resource_pool(config)
+        self.add_teacher_model_resource_pool(config)
+        self.add_ref_policy_worker(config, actor_rollout_cls)
+        validate_config(
+            config=config,
+            use_reference_policy=need_reference_policy(config),
+            use_critic=need_critic(config),
+        )
+
+        # seed the FIRST client's env + model BEFORE building dataset/trainer
+        # (FEDAGENT_BASE_SEED is read in AgenticDataset.__init__).
+        os.environ["FEDAGENT_BASE_SEED"] = str(plan[0]["seed"])
+        with open_dict(config):
+            config.actor_rollout_ref.model.path = plan[0]["model_path"]
+            config.trainer.default_local_dir = plan[0]["out_dir"]
+            config.trainer.experiment_name = plan[0]["exp"]
+
+        local_path = copy_to_local(
+            config.actor_rollout_ref.model.path,
+            use_shm=config.actor_rollout_ref.model.get("use_shm", False),
+        )
+        trust_remote_code = config.data.get("trust_remote_code", False)
+        tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
+        processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
+        resource_pool_manager = self.init_resource_pool_mgr(config)
+
+        train_dataset = create_rl_dataset(
+            config.data.train_files, config.data, tokenizer, processor,
+            is_train=True, max_samples=config.data.get("train_max_samples", -1),
+        )
+        val_dataset = create_rl_dataset(
+            config.data.val_files, config.data, tokenizer, processor,
+            is_train=False, max_samples=config.data.get("val_max_samples", -1),
+        )
+        train_sampler = create_rl_sampler(config.data, train_dataset)
+
+        self.trainer = RayPPOTrainer(
+            config=config,
+            tokenizer=tokenizer,
+            processor=processor,
+            role_worker_mapping=self.role_worker_mapping,
+            resource_pool_manager=resource_pool_manager,
+            ray_worker_group_cls=ray_worker_group_cls,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            collate_fn=collate_fn,
+            train_sampler=train_sampler,
+        )
+        self.trainer.init_workers()  # ONCE: Ray + FSDP + vLLM + kernels (binds reload_client_model)
+
+        # --- eval_mode=worker setup (docs §7.4): build a val dataloader from the UNPERTURBED
+        # val_env_spec so THIS hot trainer can eval the merged model itself each round -- no second
+        # vLLM, no eval cold-start, no OOM (the answer for a GPU-saturated node). Gated on the env var. -
+        self._worker_eval_spec = os.environ.get("FEDAGENT_WORKER_EVAL")
+        self._worker_eval_dir = os.environ.get("FEDAGENT_WORKER_EVAL_DIR")
+        self._worker_eval_url = os.environ.get("FEDAGENT_WORKER_EVAL_URL")
+        # eval cadence: the per-round GLOBAL eval (paper red line, server-aggregated model) runs EVERY
+        # round; only the round-0 BASE point is gated by val_before_train. test_freq is verl's WITHIN-job
+        # step cadence (client-end circle marks), NOT this global eval -- so it does NOT gate here.
+        self._worker_vbt = os.environ.get("FEDAGENT_WORKER_EVAL_VBT", "1") == "1"
+        self._worker_val_dl = None
+        if self._worker_eval_spec:
+            from torchdata.stateful_dataloader import StatefulDataLoader
+            wval = create_rl_dataset(self._worker_eval_spec, config.data, tokenizer, processor,
+                                     is_train=False, max_samples=config.data.get("val_max_samples", -1))
+            # honor data.val_batch_size like stock verl (_create_dataloader): only fall back to the
+            # whole val set when it's unset. Hardcoding len(wval) would fire ALL val episodes at the
+            # env service in one batch -> the connection/VRAM/time storm on full WebShop/ALFWorld.
+            val_bs = config.data.get("val_batch_size", None) or len(wval)
+            self._worker_val_dl = StatefulDataLoader(
+                dataset=wval, batch_size=val_bs, shuffle=False, drop_last=False,
+                num_workers=config.data.get("dataloader_num_workers", 8), collate_fn=collate_fn)
+            with open_dict(config):
+                config.actor_rollout_ref.rollout.val_kwargs.temperature = float(
+                    os.environ.get("FEDAGENT_WORKER_EVAL_TEMP", "0.4"))
+                config.actor_rollout_ref.rollout.val_kwargs.do_sample = True
+            print(f"[persistent] worker-eval armed: {self._worker_eval_spec} ({len(wval)} samples) "
+                  f"-> reuse the hot engine each round (no eval cold-start)", flush=True)
+
+        # --- cross-round outer loop (lever #4 extended, docs §7.2) -----------------------
+        # cross_round=off: run this round's plan once, return (process exits -> next round is a
+        # fresh process). cross_round=on: after each round, signal the orchestrator (which runs
+        # the SAME external FedAvg/merge), then wait for the next round's merged-model plan and
+        # keep going IN THE SAME PROCESS -- paying the cold-start once for the whole run.
+        cross_round = os.environ.get("FEDAGENT_CROSS_ROUND") == "1"
+        xdir = Path(os.environ["FEDAGENT_XROUND_DIR"]) if cross_round else None
+        r = int(os.environ.get("FEDAGENT_XROUND_START_ROUND", "1"))
+        first_ever = True
+        while True:
+            # --- per-client loop: the whole point of lever #4 ---------------------------
+            for i, spec in enumerate(plan):
+                if not (first_ever and i == 0):
+                    self._reset_for_client(spec)  # very first client already configured above
+                # worker-eval: at i==0 the round's STARTING model (base for r=1, else model_{r-1}
+                # merged) is loaded -> eval it on the hot engine, label round r-1, BEFORE training.
+                # Gated on the orchestrator's cadence so worker matches inline/parallel/shared.
+                if i == 0 and self._worker_val_dl is not None and self._should_worker_eval(r - 1):
+                    self._worker_validate(r - 1)
+                self._route_service(spec)         # point shared workers at THIS client's env service
+                print(f"[persistent] >>> round {r} client {spec['client']} (idx {i}) fit() -> "
+                      f"{spec['out_dir']}", flush=True)
+                self.trainer.fit()
+                print(f"[persistent] <<< round {r} client {spec['client']} done", flush=True)
+            first_ever = False
+            if not cross_round:
+                return
+            # signal the orchestrator that round r's checkpoints are saved, then wait for either
+            # the next round's plan (merged model) or STOP. The worker idles here (holding GPUs)
+            # while FedAvg/merge/eval run -- they coexist (separate NCCL world, ample VRAM).
+            (xdir / f"done_{r}").write_text("ok")
+            print(f"[persistent] round {r} done -> signalled; waiting for round {r + 1} / stop",
+                  flush=True)
+            plan = self._wait_next_round(xdir, r)
+            if plan is None:
+                print("[persistent] STOP received; exiting cross-round loop", flush=True)
+                return
+            r += 1
+
+    @staticmethod
+    def _wait_next_round(xdir: Path, r: int, poll_s: float = 2.0):
+        """Block until the orchestrator publishes round r+1's plan (-> load + return it) or STOP
+        (-> return None). File handshake (GPFS-safe: go_{r+1} is touched only AFTER the plan is
+        fully written)."""
+        go, stop, plan_f = xdir / f"go_{r + 1}", xdir / "stop", xdir / f"plan_round_{r + 1}.json"
+        while True:
+            if stop.exists():
+                return None
+            if go.exists() and plan_f.exists():
+                return json.load(open(plan_f))
+            time.sleep(poll_s)
+
+    def _reset_for_client(self, spec):
+        """Reproduce, per client, everything the subprocess-per-client path got for free."""
+        from verl.utils.fs import copy_to_local
+
+        t = self.trainer
+        cfg = t.config
+        # (e) re-point output dir / experiment name / model path
+        with open_dict(cfg):
+            cfg.trainer.default_local_dir = spec["out_dir"]
+            cfg.trainer.experiment_name = spec["exp"]
+            cfg.actor_rollout_ref.model.path = spec["model_path"]
+
+        # (b) rebuild dataloader for this client's seed (read in AgenticDataset.__init__).
+        # BEFORE the weight reload so the fresh LR scheduler sees the right total_training_steps
+        # (ray_trainer.py:438-452); harmless for constant-LR (paper) schedules.
+        os.environ["FEDAGENT_BASE_SEED"] = str(spec["seed"])
+        t._create_dataloader(None, None, None, None)
+
+        # (a)+(c)+(FedProx) reload weights + fresh optimizer/scheduler + drop FedProx anchor
+        actor_local = copy_to_local(spec["model_path"])
+        t.actor_rollout_wg.reload_client_model(actor_local)
+        # PPO/gae: reload the federated critic too (fresh value weights + fresh critic optimizer)
+        if getattr(t, "use_critic", False) and spec.get("critic_path"):
+            t.critic_wg.reload_critic_model(copy_to_local(spec["critic_path"]))
+
+        # (d) deterministic driver-side RNG (advantage/uuid) + GPU hygiene (audit #14)
+        seed = int(spec["seed"])
+        random.seed(seed)
+        np.random.seed(seed % (2**32))
+        torch.manual_seed(seed)
+        torch.cuda.empty_cache()
+        print(f"[persistent] reset client {spec['client']}: model={spec['model_path']} seed={seed}",
+              flush=True)
+
+    @staticmethod
+    def _route_service(spec):
+        """Per-client env-service routing (webshop/alfworld). Rewrite FEDAGENT_SERVICE_URL_FILE with
+        this client's service URL BEFORE its fit(), so the SHARED agent-loop workers (one process for
+        all clients) build envs that hit the right per-client service -- which process-env routing
+        can't do within one process. No-op for in-process envs (tinyguess): the plan carries no
+        service_url, or FEDAGENT_SERVICE_URL_FILE is unset (subprocess path)."""
+        url = spec.get("service_url")
+        url_file = os.environ.get("FEDAGENT_SERVICE_URL_FILE")
+        if url and url_file:
+            Path(url_file).write_text(url)
+            print(f"[persistent] route client {spec['client']} -> {url}", flush=True)
+
+    def _should_worker_eval(self, eval_round: int) -> bool:
+        """The per-round GLOBAL eval (paper red line, server-aggregated model) runs EVERY round; only
+        the round-0 BASE point is gated by val_before_train. test_freq is verl's WITHIN-job step cadence
+        (client-end circle marks), NOT this global eval -- so don't gate on it. The worker evals the
+        STARTING model of each round (round r-1 at round r), covering 0..T-1; the FINAL round is evaled
+        by the orchestrator after the worker stops."""
+        return self._worker_vbt if eval_round == 0 else True
+
+    def _worker_validate(self, eval_round: int) -> None:
+        """eval_mode=worker: score the ALREADY-LOADED model on the unperturbed val set using verl's
+        ``_validate`` + the HOT rollout engine (no second vLLM -> no OOM, no eval cold-start). Dumps
+        val_samples in eval_global's layout so the orchestrator reads it the same way
+        (summarize_val_dump). Routes the env to the val service for the pass, then training reroutes."""
+        t = self.trainer
+        dump = (Path(self._worker_eval_dir)
+                / (f"round_{eval_round}" if eval_round > 0 else "round_0") / "eval" / "val_samples")
+        dump.mkdir(parents=True, exist_ok=True)
+        url_file = os.environ.get("FEDAGENT_SERVICE_URL_FILE")
+        if url_file and self._worker_eval_url:                  # eval hits the VAL service, not a client's
+            Path(url_file).write_text(self._worker_eval_url)
+        saved_dl, saved_dump = t.val_dataloader, t.config.trainer.get("validation_data_dir", None)
+        t.val_dataloader = self._worker_val_dl
+        with open_dict(t.config):
+            t.config.trainer.validation_data_dir = str(dump)
+        print(f"[persistent] worker-eval round {eval_round} on the hot engine -> {dump}", flush=True)
+        # verl's _validate() reads self.global_steps for the logged step label; only fit() sets it, and
+        # the FIRST worker-eval (round r=1, i==0) runs BEFORE any fit() -> seed it when missing. fit()
+        # resets global_steps at its own start, so this never leaks into training; the dump path is
+        # overridden above (validation_data_dir) so the label value doesn't affect what we parse.
+        if not hasattr(t, "global_steps"):
+            t.global_steps = 0
+        # re-init the dump executor if a prior fit() shut it down -- exactly what verl's own fit() does
+        # (ray_trainer.py:1369-1370). Each fit() calls _shutdown_dump_executor at its end (1770), so by
+        # the next round's worker-eval the executor is dead and _validate()'s _dump_generations would
+        # raise "cannot schedule new futures after shutdown". (No-op on the first eval: still alive.)
+        dex = getattr(t, "_dump_executor", None)
+        if dex is not None and dex._shutdown:
+            t._init_dump_executor()
+        # CRITICAL: mirror fit()'s pre-validate engine prep (ray_trainer.py:1386-1387). verl inits the
+        # vLLM rollout with DUMMY weights and leaves the replicas ASLEEP at the end of init_workers
+        # (ray_trainer.py:972); the real weights are synced from FSDP by checkpoint_manager.update_weights
+        # at each rollout. The worker-eval runs BEFORE this round's fit(), so without the sync vLLM still
+        # holds dummy weights -> CUDA illegal-memory-access / invalid-argument (EngineDeadError). The engine
+        # is asleep here (after init_workers, or after the previous fit()'s last sleep_replicas), so the
+        # update_weights precondition (rollout asleep) holds. _validate() leaves it AWAKE, so re-sleep in
+        # finally to restore the state fit()'s own update_weights (1387) and the training loop assume.
+        cm = getattr(t, "checkpoint_manager", None)
+        if cm is not None:
+            cm.update_weights(t.global_steps)
+        try:
+            t._validate()
+        finally:
+            if cm is not None:
+                cm.sleep_replicas()
+            t.val_dataloader = saved_dl
+            with open_dict(t.config):
+                t.config.trainer.validation_data_dir = saved_dump

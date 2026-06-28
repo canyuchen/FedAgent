@@ -142,8 +142,16 @@ class WindowedAgentLoopWorker(AgentLoopWorker):
         with rollout_trace_attr(step=trajectory["step"], sample_index=trajectory["sample_index"],
                                 rollout_n=trajectory["rollout_n"], validate=trajectory["validate"],
                                 name="agent_loop", trace=trace):
+            # windowed manager -> use the WINDOWED variant of the agent loop. The env spec carries
+            # agent_name=gym_text (shared with concat); gym_text_windowed is the subclass that adds
+            # run_episode_windowed. Auto-map gym_text -> gym_text_windowed so no per-mode agent_name
+            # / config change is needed; fall back to agent_name if no _windowed variant exists (then
+            # run_episode_windowed must be on it, else it errors as before -- the release blocker).
+            _wname = agent_name if str(agent_name).endswith("_windowed") else f"{agent_name}_windowed"
+            _wcfg = _agent_loop_registry[_wname] if _wname in _agent_loop_registry \
+                else _agent_loop_registry[agent_name]
             agent_loop = hydra.utils.instantiate(
-                config=_agent_loop_registry[agent_name],
+                config=_wcfg,
                 trainer_config=DictConfigWrap(config=self.config),
                 server_manager=self.llm_client, tokenizer=self.tokenizer, processor=self.processor,
                 dataset_cls=self.dataset_cls, data_config=DictConfigWrap(self.config.data),
