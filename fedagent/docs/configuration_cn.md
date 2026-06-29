@@ -1,6 +1,7 @@
 # Configuration（配置）
 
-FedAgent 是**叠加在未经修改的 verl 0.8 之上的一层薄 overlay** —— 没有 trainer fork。每一次
+FedAgent 是**叠加在近乎原生的 verl 0.8 之上的一层薄 overlay**（一处 2 行的 setup patch —— 见
+[installation.md](./installation.md)）—— 没有 trainer fork。每一次
 run 都由配置驱动：联邦 runner 读取的一份扁平 YAML、一份组合 verl 原生 `ppo_trainer` 的 Hydra
 base、一份 agent-loop registry，以及 per-episode 的 env spec。本页是**配置文件解码器**与
 **联邦 runner key 参考**：`run_fed.py` 的 `DEFAULTS` dict 里的每一个 key、env-spec 行 schema、

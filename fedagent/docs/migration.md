@@ -10,7 +10,7 @@ verification status. The running experiment log is [`../EXPERIMENTS.md`](../EXPE
 
 | Aspect | Original (verl-agent 0.3.1 fork) | This overlay (stock verl 0.8) | Why |
 |---|---|---|---|
-| verl | forked; federated logic woven into the trainer | stock, imported as a library; **no fork** | track upstream, no fork maintenance |
+| verl | forked; federated logic woven into the trainer | stock, imported as a library; **no fork** (one 2-line exception — see note) | track upstream, no fork maintenance |
 | Control plane | `core/custom_fed_server.py` + a regex-rewritten base bash script | [`fed/run_fed.py`](../fed/README.md) — subprocess-per-(client,round) | clean, verl-agnostic |
 | Env execution | in-process verl-agent env managers | **remote HTTP env services**, one per client | conda dependency isolation |
 | Hooks | patched inside the vendored tree | verl extension points (`custom_cls`, agent-loop registry, Hydra `searchpath`) | stock trainer untouched |
@@ -18,6 +18,11 @@ verification status. The running experiment log is [`../EXPERIMENTS.md`](../EXPE
 | Checkpoints | `model_world_size_1` single-rank | FSDP shards → `aggregate_fedavg_fsdp.py` → `verl.model_merger` | verl 0.8 native FSDP |
 | FedProx | in-trainer | `sitecustomize.py`, gated on `FEDPROX_MU` | avoids clobbering verl's per-worker GPU assignment |
 | Algorithm / heterogeneity / protocol | GRPO G=8 / PPO; two-level het; N=100/M=2/E=3/T=70 | **identical** | scientific equivalence |
+
+> **The one verl exception.** "No fork" remains the principle, with a single deliberate 2-line patch
+> (the FSDP→vLLM weight-transfer socket, captured under `tools/verl08_migration/patches/` so it stays
+> reproducible without forking; see [acceleration.md](./acceleration.md) §7.7). It hardens concurrent
+> same-node verl jobs and is needed only for client-parallel / eval-parallel runs — still no maintained fork.
 
 ## Environment fidelity: the engines are reused, not reimplemented
 

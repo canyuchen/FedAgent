@@ -10,7 +10,7 @@
 
 | 方面 | 原版（verl-agent 0.3.1 fork） | 本 overlay（stock verl 0.8） | 为什么 |
 |---|---|---|---|
-| verl | fork；联邦逻辑织进 trainer | stock，作为库导入；**不 fork** | 跟随 upstream，无需维护 fork |
+| verl | fork；联邦逻辑织进 trainer | stock，作为库导入；**不 fork**（一处 2 行的例外 —— 见下注） | 跟随 upstream，无需维护 fork |
 | 控制平面 | `core/custom_fed_server.py` + 一个被正则改写的 base bash 脚本 | [`fed/run_fed.py`](../fed/README.md) —— 每个 (client,round) 一个子进程 | 干净、与 verl 无关 |
 | Env 执行 | 进程内 verl-agent env manager | **远程 HTTP env 服务**，每个 client 一个 | conda 依赖隔离 |
 | Hooks | patch 进 vendored tree | verl 扩展点（`custom_cls`、agent-loop registry、Hydra `searchpath`） | stock trainer 不动 |
@@ -18,6 +18,11 @@
 | Checkpoints | `model_world_size_1` 单 rank | FSDP shards → `aggregate_fedavg_fsdp.py` → `verl.model_merger` | verl 0.8 原生 FSDP |
 | FedProx | trainer 内 | `sitecustomize.py`，门控于 `FEDPROX_MU` | 避免覆盖 verl 的 per-worker GPU 分配 |
 | 算法 / 异质性 / 协议 | GRPO G=8 / PPO；两级 het；N=100/M=2/E=3/T=70 | **完全相同** | 科学等价 |
+
+> **唯一一处 verl 例外。** "不 fork" 仍是原则，只有一处有意的 2 行 patch（FSDP→vLLM weight-transfer
+> socket，捕获在 `tools/verl08_migration/patches/` 下，从而无需 fork 即可复现；见
+> [acceleration.md](./acceleration.md) §7.7）。它加固同节点并发的 verl job，仅 client-parallel /
+> eval-parallel run 才需要 —— 依然没有需要维护的 fork。
 
 ## 环境保真：引擎是复用的，不是重写的
 

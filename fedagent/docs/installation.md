@@ -45,10 +45,15 @@ conda activate <env-name>
 
 ## 1. Trainer env — `fedagent-verl08` (verl 0.8, Python 3.12)
 
-This is **stock verl 0.8 imported as a library** — there is no verl fork and no
-patched verl tree. Create a Python 3.12 env and install verl 0.8 with its FSDP
-inference stack (vLLM + flash-attn); FedAgent itself ships no `setup.py` — it is
-used in-place from the repo with the repo root on `PYTHONPATH`.
+This is **stock verl 0.8 imported as a library** — there is no maintained verl
+fork; the single deliberate exception is **one 2-line setup patch** (captured at
+`tools/verl08_migration/patches/verl_weight_transfer_jobid.patch`, base commit
+`7aed6b2`) that hardens the FSDP→vLLM weight-transfer socket so concurrent
+same-node verl jobs don't collide — required only for client-parallel /
+eval-parallel runs (see [acceleration.md](./acceleration.md) §7.7). Create a
+Python 3.12 env and install verl 0.8 with its FSDP inference stack (vLLM +
+flash-attn); FedAgent itself ships no `setup.py` — it is used in-place from the
+repo with the repo root on `PYTHONPATH`.
 
 ```bash
 conda create -n fedagent-verl08 python=3.12 -y
@@ -58,6 +63,11 @@ conda activate fedagent-verl08
 # verl ships an installer for the GPU stack:
 bash /path/to/verl/scripts/install_vllm_sglang_mcore.sh   # USE_MEGATRON=0
 pip install -e /path/to/verl                              # verl 0.8 as a library
+
+# Apply the one 2-line weight-transfer-socket patch (concurrent-job hardening;
+# see tools/verl08_migration/patches/README.md). Stock single-job runs are
+# byte-for-byte unchanged; only client-parallel / eval-parallel runs need it.
+git -C /path/to/verl apply /path/to/fedagent/tools/verl08_migration/patches/verl_weight_transfer_jobid.patch
 ```
 
 - **Python 3.12** is required for this env (the WebShop/ALFWorld service envs use

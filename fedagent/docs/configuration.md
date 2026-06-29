@@ -1,6 +1,7 @@
 # Configuration
 
-FedAgent is a **thin overlay on unmodified verl 0.8** — there is no trainer fork. Every
+FedAgent is a **thin overlay on near-stock verl 0.8** (one 2-line setup patch — see
+[installation.md](./installation.md)) — there is no trainer fork. Every
 run is driven by configuration: a flat YAML the federated runner reads, a Hydra base that
 composes verl's stock `ppo_trainer`, an agent-loop registry, and per-episode env specs.
 This page is the **config-file decoder** and the **federated-runner key reference**: every

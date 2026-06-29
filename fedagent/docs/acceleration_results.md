@@ -27,7 +27,7 @@ GPU-validated; the **real paper config runs end-to-end**.
 | **#4 persistent trainer** | one process across clients/rounds | ✅ GPU | per-round **−43%**, cross-round **−62%**; `max|Δ|=1.13e-5` | §2 |
 | **eval modes** | inline / parallel / shared / worker | ✅ GPU (0.5B + 1.5B) | all run; `val` identical (eval is read-only) | §3 |
 | **#1 eval ∥ train** (= `parallel`) | overlap eval on disjoint GPUs | ✅ GPU | fastest mode (1.5B **2493s**) | §3 |
-| **#3 client-parallel** | clients concurrent on one node | ✅ GPU | 1.5B 2×2 = **−35%** (+ port-bug fixed) | §4 |
+| **#3 client-parallel** | clients concurrent on one node | ✅ GPU | 1.5B 2×2 = **−35%** (2 concurrency bugs fixed: FedAvg rendezvous-port + FSDP→vLLM weight-transfer socket) | §4 |
 | **#2 env prewarm** | overlap env-service warmup | ⚠️ CPU only | benefit ≈0 for homogeneous WebShop → minor/opt-in | §7 |
 | **equivalence A/Bs** | accel weights == subprocess | ✅ GPU | GRPO actor **9.8e-6**, PPO actor **1.16e-5** | §5 |
 | **client-end eval (circles)** | per-client post-train marks | ✅ GPU (both paths) | `client_curve`, 4 circles | §6 |
@@ -96,12 +96,21 @@ Two clients trained **concurrently** on disjoint GPU pairs (A=0,1 / B=2,3), 1.5B
   FSDP comm + env-latency-bound rollout + fixed cold-start weigh more at small scale) → splitting 4→2+2 wins.
   **Caveat:** large models (4-GPU≈2×) → wash → genuinely need multi-node (one client per node).
 - **Coexistence**: two verl/Ray/vLLM jobs share a node cleanly (disjoint pairs, 6519 MiB ×4); isolation =
-  per-job `CUDA_VISIBLE_DEVICES` + `RAY_TMPDIR`.
-- **Bug found + fixed**: FedAvg `torchrun` used the default c10d rendezvous `localhost:29500` → concurrent
-  aggregations collide → one dies `rc=1`. Fix: `torchrun --standalone` + clear `MASTER_*`/`RANK`/`WORLD_SIZE`
-  (`run_fed.py fedavg()`); aggregator comm-port only, math unchanged. Verified: concurrent A+B both `rc=0`.
-  (The `DataLoader SIGKILL` symptom was a **red herring** — benign `__del__` teardown noise; no OOM.) Full
-  forensics: `acceleration.md` §Lever #3.
+  per-job `CUDA_VISIBLE_DEVICES` + `RAY_TMPDIR`. This holds for the **2-job** case as-is; the **3-job** case
+  (2 train + 1 eval) additionally needs the weight-transfer-socket fix below.
+- **Bug #1 found + fixed (FedAvg rendezvous port)**: FedAvg `torchrun` used the default c10d rendezvous
+  `localhost:29500` → concurrent aggregations collide → one dies `rc=1`. Fix: `torchrun --standalone` + clear
+  `MASTER_*`/`RANK`/`WORLD_SIZE` (`run_fed.py fedavg()`); aggregator comm-port only, math unchanged. Verified:
+  concurrent A+B both `rc=0`. (The `DataLoader SIGKILL` symptom was a **red herring** — benign `__del__`
+  teardown noise; no OOM.) Full forensics: `acceleration.md` §Lever #3.
+- **Bug #2 found + fixed (FSDP→vLLM weight-transfer socket)**: verl derives the weight-transfer ZMQ `/tmp`
+  socket from the Ray job id, but each isolated Ray cluster assigns the **same first job id `01000000`** → all
+  concurrent jobs compute the **same** socket path → the weight sync **deadlocks**. Fix: `run_fed.py` exports a
+  unique **`VERL_RAY_JOB_ID`** per verl subprocess, honored by the 2-line verl patch. Pointer: `acceleration.md`
+  §Lever #3 / §7.7.
+- **"2 train on 1 GPU + 2 GPU eval" layout** (§7.7) — correctness-OK and eval hidden, but **not** the fast
+  path: 1-GPU **995s** vs #3 + worker-eval **845s** vs #3 (eval off) **727s** vs solo **558s**. Recommended
+  fast path = **#3 + `eval_mode=worker`** (needs the weight-transfer-socket fix above).
 
 ## 5. Equivalence A/Bs (the project bar)
 

@@ -23,6 +23,9 @@ FedAgent is **federated RL for LLM agents**: each round, a few clients each trai
 multi-turn rollouts against WebShop/ALFWorld), then the server **FedAvg**s their weights. The original code
 **forked verl-agent 0.3.1** and wove federation into the trainer. This migration re-implements it as a **thin
 overlay on stock verl 0.8 — no fork** — so the framework tracks upstream without fork maintenance.
+(One deliberate exception: a single **2-line verl patch** to the FSDP→vLLM weight-transfer socket, captured
+as a patch under `tools/verl08_migration/patches/` rather than a fork — needed only for concurrent same-node
+jobs; details in [acceleration.md](acceleration.md) §Lever #3 / §7.7.)
 
 The **bar is scientific equivalence**: reproduce the paper's *conclusions* (the input-dynamics asymmetry, the
 heterogeneity sweep orderings, the baseline relationships) within 3-seed noise. This permits using verl 0.8's

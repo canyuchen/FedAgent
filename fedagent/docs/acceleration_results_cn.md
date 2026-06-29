@@ -27,7 +27,7 @@ wall-clock 砍掉 **−43% 到 −62%**。主导成本 —— 每个 (client×ro
 | **#4 持久化 trainer** | 一个进程跨越 clients/rounds | ✅ GPU | per-round **−43%**、cross-round **−62%**；`max|Δ|=1.13e-5` | §2 |
 | **eval modes** | inline / parallel / shared / worker | ✅ GPU（0.5B + 1.5B）| 全部跑通；`val` 一致（eval 只读）| §3 |
 | **#1 eval ∥ train**（= `parallel`）| 在不相交 GPU 上重叠 eval | ✅ GPU | 最快的模式（1.5B **2493s**）| §3 |
-| **#3 client-parallel** | 一个节点上 client 并发 | ✅ GPU | 1.5B 2×2 = **−35%**（+ 端口 bug 已修）| §4 |
+| **#3 client-parallel** | 一个节点上 client 并发 | ✅ GPU | 1.5B 2×2 = **−35%**（修了 2 个并发 bug：FedAvg rendezvous-port + FSDP→vLLM weight-transfer socket）| §4 |
 | **#2 env prewarm** | 重叠 env-service warmup | ⚠️ 仅 CPU | 对同质 WebShop 收益 ≈0 → 次要/可选启用 | §7 |
 | **等价性 A/B** | accel 权重 == 子进程 | ✅ GPU | GRPO actor **9.8e-6**、PPO actor **1.16e-5** | §5 |
 | **client-end eval（圆点）** | per-client 训练后标记 | ✅ GPU（两条路径）| `client_curve`、4 个圆点 | §6 |
@@ -96,12 +96,21 @@ per-round 红线，**每个 round** 都评；`client_end_eval` 额外加 per-cli
   FSDP comm + env-latency-bound 的 rollout + 固定冷启动在小规模下占比更重）→ 把 4→2+2 拆开就赢。
   **注意：** 大模型（4-GPU≈2×）→ 打平 → 那才是真正需要多节点（一 client 一节点）的场景。
 - **共存**：两个 verl/Ray/vLLM job 干净共享一个节点（不相交的卡对，6519 MiB ×4）；隔离 =
-  每个 job 各自的 `CUDA_VISIBLE_DEVICES` + `RAY_TMPDIR`。
-- **发现并修复一个 bug**：FedAvg `torchrun` 用了默认的 c10d rendezvous `localhost:29500` → 并发
-  聚合相撞 → 一个死 `rc=1`。修法：`torchrun --standalone` + 清掉 `MASTER_*`/`RANK`/`WORLD_SIZE`
-  （`run_fed.py fedavg()`）；只动聚合的通信端口，数学不变。已验证：并发 A+B 两个都 `rc=0`。
-  （`DataLoader SIGKILL` 症状是**红鲱鱼** —— 良性的 `__del__` teardown 噪声；无 OOM。）完整
-  取证：`acceleration.md` §Lever #3。
+  每个 job 各自的 `CUDA_VISIBLE_DEVICES` + `RAY_TMPDIR`。这对 **2-job** 场景原样成立；**3-job**
+  场景（2 train + 1 eval）还额外需要下面的 weight-transfer-socket 修复。
+- **Bug #1 发现并修复（FedAvg rendezvous 端口）**：FedAvg `torchrun` 用了默认的 c10d rendezvous
+  `localhost:29500` → 并发聚合相撞 → 一个死 `rc=1`。修法：`torchrun --standalone` + 清掉
+  `MASTER_*`/`RANK`/`WORLD_SIZE`（`run_fed.py fedavg()`）；只动聚合的通信端口，数学不变。已验证：
+  并发 A+B 两个都 `rc=0`。（`DataLoader SIGKILL` 症状是**红鲱鱼** —— 良性的 `__del__` teardown
+  噪声；无 OOM。）完整取证：`acceleration.md` §Lever #3。
+- **Bug #2 发现并修复（FSDP→vLLM weight-transfer socket）**：verl 从 Ray job id 推导 weight-transfer
+  的 ZMQ `/tmp` socket，但每个隔离的 Ray cluster 都分到**相同的首个 job id `01000000`** → 所有并发 job
+  算出**相同**的 socket 路径 → weight sync **死锁**。修法：`run_fed.py` 为每个 verl 子进程导出唯一的
+  **`VERL_RAY_JOB_ID`**，由那 2 行 verl patch 尊重。指针：`acceleration.md` §Lever #3 / §7.7。
+
+- **"2 train 挤 1 GPU + 2 GPU eval" 布局**（§7.7）—— 正确性 OK 且 eval 被隐藏，但**不是**快路径：
+  1-GPU **995s** vs #3 + worker-eval **845s** vs #3（eval 关）**727s** vs solo **558s**。推荐快路径 =
+  **#3 + `eval_mode=worker`**（需要上面的 weight-transfer-socket 修复）。
 
 ## 5. 等价性 A/B（项目基准）
 

@@ -23,6 +23,9 @@ FedAgent 是**面向 LLM agent 的联邦 RL**：每一轮，少数几个 client 
 针对 WebShop/ALFWorld 的多轮 rollout），然后 server 把它们的权重做 **FedAvg**。原始代码
 **fork 了 verl-agent 0.3.1** 并把联邦逻辑织进了 trainer。本次迁移把它重新实现为一个**作用在
 stock verl 0.8 上的薄 overlay —— 不 fork** —— 这样框架就能跟随上游，无需维护 fork。
+（唯一一处有意的例外：对 FSDP→vLLM weight-transfer socket 的一处 **2 行 verl patch**，以 patch 形式
+捕获在 `tools/verl08_migration/patches/` 下而非 fork —— 仅同节点并发 job 才需要；细节见
+[acceleration.md](acceleration.md) §Lever #3 / §7.7。）
 
 **基准是科学等价**：在 3-seed 噪声范围内复现论文的*结论*（input-dynamics 不对称性、
 异质性扫描的排序、baseline 之间的关系）。这允许使用 verl 0.8 的原生 rollout 而不必逐 bit 复现

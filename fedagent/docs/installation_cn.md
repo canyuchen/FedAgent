@@ -43,8 +43,12 @@ conda activate <env-name>
 
 ## 1. Trainer 环境 —— `fedagent-verl08`（verl 0.8，Python 3.12）
 
-这是**作为库 import 的原生 verl 0.8** —— 没有 verl fork，也没有
-打过 patch 的 verl 树。创建一个 Python 3.12 环境，并安装带 FSDP
+这是**作为库 import 的原生 verl 0.8** —— 没有需要维护的 verl fork；唯一一处
+有意的例外是**一处 2 行的 setup patch**（捕获在
+`tools/verl08_migration/patches/verl_weight_transfer_jobid.patch`，base commit
+`7aed6b2`），它加固 FSDP→vLLM weight-transfer socket，让同节点并发的 verl job
+不相撞 —— 仅 client-parallel / eval-parallel run 才需要（见
+[acceleration.md](./acceleration.md) §7.7）。创建一个 Python 3.12 环境，并安装带 FSDP
 inference 栈（vLLM + flash-attn）的 verl 0.8；FedAgent 本身不带 `setup.py` —— 它
 就在 repo 里原地使用，把 repo root 放到 `PYTHONPATH` 上即可。
 
@@ -56,6 +60,11 @@ conda activate fedagent-verl08
 # verl ships an installer for the GPU stack:
 bash /path/to/verl/scripts/install_vllm_sglang_mcore.sh   # USE_MEGATRON=0
 pip install -e /path/to/verl                              # verl 0.8 as a library
+
+# 应用那一处 2 行的 weight-transfer-socket patch（并发-job 加固；见
+# tools/verl08_migration/patches/README.md）。原生单-job run 逐字节不变；
+# 只有 client-parallel / eval-parallel run 才需要它。
+git -C /path/to/verl apply /path/to/fedagent/tools/verl08_migration/patches/verl_weight_transfer_jobid.patch
 ```
 
 - 这个环境**必须用 Python 3.12**（WebShop/ALFWorld 的服务环境用 3.10）。
