@@ -110,6 +110,8 @@ class PersistentFedTaskRunner(TaskRunner):
         # round; only the round-0 BASE point is gated by val_before_train. test_freq is verl's WITHIN-job
         # step cadence (client-end circle marks), NOT this global eval -- so it does NOT gate here.
         self._worker_vbt = os.environ.get("FEDAGENT_WORKER_EVAL_VBT", "1") == "1"
+        # client-end circles: eval EACH client's post-training model on the hot engine after its fit().
+        self._worker_client_end_eval = os.environ.get("FEDAGENT_WORKER_CLIENT_END_EVAL", "0") == "1"
         self._worker_val_dl = None
         if self._worker_eval_spec:
             from torchdata.stateful_dataloader import StatefulDataLoader
@@ -153,6 +155,11 @@ class PersistentFedTaskRunner(TaskRunner):
                       f"{spec['out_dir']}", flush=True)
                 self.trainer.fit()
                 print(f"[persistent] <<< round {r} client {spec['client']} done", flush=True)
+                # client-end circle: score THIS client's just-trained model on the val service using the
+                # hot engine (no second vLLM). _worker_validate routes to the val service + syncs the
+                # current (client-trained) weights; the next client's reset/route/fit restores training.
+                if self._worker_client_end_eval and self._worker_val_dl is not None:
+                    self._worker_validate(r, client_id=spec["client"])
             first_ever = False
             if not cross_round:
                 return
@@ -236,14 +243,16 @@ class PersistentFedTaskRunner(TaskRunner):
         by the orchestrator after the worker stops."""
         return self._worker_vbt if eval_round == 0 else True
 
-    def _worker_validate(self, eval_round: int) -> None:
+    def _worker_validate(self, eval_round: int, client_id=None) -> None:
         """eval_mode=worker: score the ALREADY-LOADED model on the unperturbed val set using verl's
         ``_validate`` + the HOT rollout engine (no second vLLM -> no OOM, no eval cold-start). Dumps
         val_samples in eval_global's layout so the orchestrator reads it the same way
         (summarize_val_dump). Routes the env to the val service for the pass, then training reroutes."""
         t = self.trainer
-        dump = (Path(self._worker_eval_dir)
-                / (f"round_{eval_round}" if eval_round > 0 else "round_0") / "eval" / "val_samples")
+        rdir = Path(self._worker_eval_dir) / (f"round_{eval_round}" if eval_round > 0 else "round_0")
+        # client_id set => client-end circle (this client's post-training model) -> client_<c>/eval;
+        # else the aggregated round point -> round_<r>/eval.
+        dump = (rdir / f"client_{client_id}" if client_id is not None else rdir) / "eval" / "val_samples"
         dump.mkdir(parents=True, exist_ok=True)
         url_file = os.environ.get("FEDAGENT_SERVICE_URL_FILE")
         if url_file and self._worker_eval_url:                  # eval hits the VAL service, not a client's
@@ -252,7 +261,9 @@ class PersistentFedTaskRunner(TaskRunner):
         t.val_dataloader = self._worker_val_dl
         with open_dict(t.config):
             t.config.trainer.validation_data_dir = str(dump)
-        print(f"[persistent] worker-eval round {eval_round} on the hot engine -> {dump}", flush=True)
+        _what = "client-end" if client_id is not None else "worker"
+        _who = f" client {client_id}" if client_id is not None else ""
+        print(f"[persistent] {_what}-eval round {eval_round}{_who} on the hot engine -> {dump}", flush=True)
         # verl's _validate() reads self.global_steps for the logged step label; only fit() sets it, and
         # the FIRST worker-eval (round r=1, i==0) runs BEFORE any fit() -> seed it when missing. fit()
         # resets global_steps at its own start, so this never leaks into training; the dump path is

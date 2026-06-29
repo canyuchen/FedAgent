@@ -126,8 +126,10 @@ DEFAULTS = {
     "local_client_id": -1,                   # >=0 => Local baseline: train only this client of total_clients
     # --- unperturbed global-model validation/eval (paper: test_freq=5, val_before_train, temp 0.4) ---
     "val_env_spec": "",                      # "" => NO eval (back-compat); else the UNPERTURBED val env-spec
-    "test_freq": 5,                          # eval the aggregated global model every K rounds (+ final round)
-    "val_before_train": True,               # also eval the base model before round 1 (the round-0 point)
+    "test_freq": 5,                          # verl WITHIN-job step cadence (client-end marks); NOT the global eval gate
+    "val_before_train": True,               # eval the base model before round 1 (the round-0 red-line point)
+    "client_end_eval": False,               # also eval EACH client's post-training model on the unperturbed val
+                                            #   service -> the paper's per-client "circle" marks; costs +C evals/round
     "val_temperature": 0.4,                 # val sampling temperature (paper val_kwargs.temperature=0.4)
     # --- eval/training GPU sharing (docs/acceleration.md §7.7). How eval uses the node's GPUs: ---
     #   inline  : (default) eval is a BLOCKING subprocess after merge, on cfg.n_gpus_per_node GPUs.
@@ -666,12 +668,17 @@ def history_length_env(cfg) -> dict:
 
 
 def _build_eval(cfg, model_path: str, round_num: int, env_base: dict, val_url: str,
-                gpu_ids: Optional[str] = None, mem_util: Optional[float] = None):
+                gpu_ids: Optional[str] = None, mem_util: Optional[float] = None,
+                client_id: Optional[int] = None):
     """Build the (cmd, env, log_path, dump_dir) for a verl val-only pass. ``gpu_ids`` (e.g. "2,3")
     pins this eval to a DISJOINT GPU subset (parallel mode) and sets n_gpus to that count; ``mem_util``
-    overrides the eval vLLM's gpu_memory_utilization (shared mode -> fit the leftover VRAM)."""
-    eval_dir = Path(cfg.output_dir) / (f"round_{round_num}" if round_num > 0 else "round_0") / "eval"
+    overrides the eval vLLM's gpu_memory_utilization (shared mode -> fit the leftover VRAM).
+    ``client_id`` set => the client-end eval: dump to round_<r>/client_<c>/eval (the per-client circle),
+    not the aggregated round_<r>/eval."""
+    rdir = Path(cfg.output_dir) / (f"round_{round_num}" if round_num > 0 else "round_0")
+    eval_dir = (rdir / f"client_{client_id}" / "eval") if client_id is not None else (rdir / "eval")
     dump_dir = eval_dir / "val_samples"
+    exp = f"round{round_num}" + (f"_client{client_id}" if client_id is not None else "") + "_eval"
     n_gpus = len(gpu_ids.split(",")) if gpu_ids else cfg.n_gpus_per_node
     cmd = [
         sys.executable, "-m", "fedagent.main_ppo_fed",
@@ -690,7 +697,7 @@ def _build_eval(cfg, model_path: str, round_num: int, env_base: dict, val_url: s
         f"actor_rollout_ref.rollout.val_kwargs.temperature={cfg.val_temperature}",
         "actor_rollout_ref.rollout.val_kwargs.do_sample=true",
         "trainer.project_name=fedagent_fed_eval",
-        f"trainer.experiment_name=round{round_num}_eval",
+        f"trainer.experiment_name={exp}",
     ]
     cmd += [str(o) for o in (cfg.client_overrides or [])]   # reuse rollout shape (prompt/response/n/mem)
     if mem_util is not None:                                 # shared mode: shrink eval's KV pool to fit
@@ -723,6 +730,34 @@ def eval_global(cfg, model_path: str, round_num: int, env_base: dict, val_url: s
         log(f"round {round_num} VAL (unperturbed): success={metrics['success_rate']} "
             f"reward={metrics['reward_mean']} (n={metrics['n']})")
     return metrics
+
+
+def eval_client(cfg, round_num: int, client_id: int, actor_dir, env_base: dict, val_url: str,
+                mem_util: Optional[float] = None) -> Optional[dict]:
+    """Client-end eval = the paper's per-client circle mark (docs §7.4): merge client c's POST-training
+    actor to round_<r>/client_<c>/hf, then score it on the SAME unperturbed val service the aggregated
+    red line uses (blocking val-only pass). Routes to the val service via _build_eval (not the client's
+    training service), so it scores on the benchmark not the client env -- which the within-job
+    _validate could not do (the env can't tell train from val rollouts). Dumps to
+    round_<r>/client_<c>/eval (survives cleanup_round_checkpoints: it is not under checkpoints/).
+    Read-only -> zero equivalence risk. Returns metrics or None on failure (never aborts the run)."""
+    client_hf = Path(cfg.output_dir) / f"round_{round_num}" / f"client_{client_id}" / "hf"
+    try:
+        merge_to_hf(cfg, round_num, Path(actor_dir), env_base, kind="actor", out_hf=client_hf)
+    except Exception as e:
+        log(f"[warn] client-end eval r{round_num} c{client_id}: merge failed ({e}); skipping circle")
+        return None
+    cmd, env, log_path, dump_dir = _build_eval(cfg, str(client_hf), round_num, env_base, val_url,
+                                               mem_util=mem_util, client_id=client_id)
+    rc = stream(cmd, env, log_path, tag=f"eval-r{round_num}c{client_id}")
+    if rc != 0:
+        log(f"[warn] client-end eval r{round_num} c{client_id} FAILED (rc={rc}); continuing")
+        return None
+    m = summarize_val_dump(dump_dir)
+    if m:
+        log(f"client-end eval r{round_num} c{client_id}: success={m['success_rate']} "
+            f"reward={m['reward_mean']} (n={m['n']})")
+    return m
 
 
 def launch_eval_async(cfg, model_path: str, round_num: int, env_base: dict, val_url: str,
@@ -976,6 +1011,9 @@ def run_round_persistent(cfg, round_num: int, selected: List[int], model_path: s
             # eval, so it is NOT a cadence gate here. The FINAL round is evaled by the orchestrator after
             # the worker stops, so the worker only needs 0..T-1.
             env["FEDAGENT_WORKER_EVAL_VBT"] = "1" if cfg.val_before_train else "0"
+            # client-end circles on the hot engine (after each client's fit); collected from the
+            # per-client dumps below after the worker stops.
+            env["FEDAGENT_WORKER_CLIENT_END_EVAL"] = "1" if cfg.get("client_end_eval", False) else "0"
         if cfg.env_kind in ("webshop", "alfworld"):
             # per-client routing: the worker rewrites this file with each client's service URL before
             # its fit(); the shared agent-loop workers read it (resolve_service_url) per episode. Drop
@@ -1067,20 +1105,23 @@ def fedavg(cfg, round_num: int, client_dirs: List[Path], env_base: dict,
 
 
 def merge_to_hf(cfg, round_num: int, agg_dir: Path, env_base: dict,
-                kind: str = "actor") -> Path:
+                kind: str = "actor", out_hf: Optional[Path] = None) -> Path:
     """Merge aggregated FSDP shards -> a complete HF model dir for the next round's model.path
     (actor) or critic.model.path (critic). The merger auto-detects the architecture from the
     shard's huggingface/config.json (both serialize as ...ForCausalLM; the value model just
-    carries an extra scalar value head), so no per-kind flag is needed."""
+    carries an extra scalar value head), so no per-kind flag is needed. ``out_hf`` overrides the
+    default aggregated/ path -- used by the client-end eval to merge a single client's actor to
+    round_<r>/client_<c>/hf (which survives cleanup_round_checkpoints)."""
     sub = "hf" if kind == "actor" else f"{kind}_hf"
-    hf_dir = Path(cfg.output_dir) / f"round_{round_num}" / "aggregated" / sub
+    hf_dir = Path(out_hf) if out_hf is not None else (
+        Path(cfg.output_dir) / f"round_{round_num}" / "aggregated" / sub)
     cmd = [
         sys.executable, "-m", "verl.model_merger", "merge",
         "--backend", "fsdp",
         "--local_dir", str(agg_dir),
         "--target_dir", str(hf_dir),
     ]
-    log_path = Path(cfg.output_dir) / f"round_{round_num}" / "aggregated" / f"merge_{kind}.log"
+    log_path = hf_dir.parent / f"merge_{kind}.log"
     rc = stream(cmd, env_base, log_path, tag=f"merge-{kind}-r{round_num}")
     if rc != 0:
         raise RuntimeError(f"model_merger {kind} round {round_num} FAILED (rc={rc}); see {log_path}")
@@ -1267,6 +1308,7 @@ def run(cfg) -> dict:
 
     try:
         history = []
+        client_history: List[dict] = []    # paper per-client "circle" marks (client_end_eval)
         pending_prewarm: List[dict] = []   # lever #2: round r+1's env services, launched early in round r
         current_model = base_model
         # PPO round-1 value model starts from the base (random value head on the backbone),
@@ -1347,6 +1389,18 @@ def run(cfg) -> dict:
                 agg_critic = fedavg(cfg, r, client_critics, env_base, kind="critic")
                 critic_hf = merge_to_hf(cfg, r, agg_critic, env_base, kind="critic")
 
+            # client-end eval (paper per-client "circle" marks, §7.4): score EACH client's post-training
+            # model on the unperturbed val service. MUST run before cleanup (it reads the client shards
+            # to merge client_<c>/hf, which then survives cleanup). Non-worker modes only -- worker mode
+            # evals clients on its hot engine in-process (persistent_task_runner), since the GPU-holding
+            # worker would OOM a separate eval vLLM. Read-only -> no equivalence risk.
+            if do_eval and cfg.get("client_end_eval", False) and eval_mode != "worker":
+                cmu = cfg.eval_gpu_mem_util if eval_mode == "shared" else None
+                for c, actor in zip(selected, client_actors):
+                    cm = eval_client(cfg, r, int(c), actor, env_base, val_url, mem_util=cmu)
+                    if cm:
+                        client_history.append({"round": r, "client": int(c), **cm})
+
             cleanup_round_checkpoints(cfg, r)  # free consumed FSDP shards (keep HF + logs)
 
             history.append({
@@ -1393,6 +1447,21 @@ def run(cfg) -> dict:
             mfin = eval_global(cfg, current_model, int(cfg.total_rounds), env_base, val_url)
             if mfin:
                 val_history.append({"round": int(cfg.total_rounds), "model": "aggregated", **mfin})
+            # client-end circles (worker mode): the hot-engine worker dumped each client's post-training
+            # model eval to round_<r>/client_<c>/eval after its fit(); fold them into client_history just
+            # like the orchestrator path does for the non-worker modes.
+            if cfg.get("client_end_eval", False):
+                for k in range(1, int(cfg.total_rounds) + 1):
+                    for cd in sorted((Path(cfg.output_dir) / f"round_{k}").glob("client_*/eval/val_samples")):
+                        try:
+                            c = int(cd.parent.parent.name.split("_")[1])
+                        except (IndexError, ValueError):
+                            continue
+                        cm = summarize_val_dump(cd)
+                        if cm:
+                            client_history.append({"round": k, "client": c, **cm})
+                            log(f"client-end eval r{k} c{c}: success={cm['success_rate']} "
+                                f"reward={cm['reward_mean']}")
         stop_services(pending_prewarm)   # lever #2: any un-adopted prewarmed services (loop end/error)
         stop_services(val_services)      # round services are torn down per-round; only val remains
 
@@ -1410,6 +1479,7 @@ def run(cfg) -> dict:
         "final_model": current_model,
         **({"final_critic": current_critic} if is_ppo else {}),
         **({"val_curve": val_history} if do_eval else {}),
+        **({"client_curve": client_history} if (do_eval and client_history) else {}),
         "rounds": history,
     }
     (out / "federated_summary.json").write_text(json.dumps(summary, indent=2))

@@ -535,6 +535,24 @@ loop means reproducing that lifecycle:
 4. **`val_batch_size`** — honor `config.data.val_batch_size` (stock verl) instead of `len(val)`, so a full
    WebShop/ALFWorld val set isn't fired in one batch (the env-service storm).
 
+**Per-client "client-end" circles (`client_end_eval`, default off).** The red line scores the round's
+*aggregate*; the paper also plots each client's **post-training** model as a circle (one per client per
+round). Enabling `client_end_eval: true` adds `clients_per_round` evals/round on the **unperturbed val
+set** and emits a `client_curve` (one entry per `(round, client)`) in `federated_summary.json`,
+alongside `val_curve`. Two paths, by `eval_mode`:
+- **orchestrator** (inline/parallel/shared): `eval_client` merges the client's trained actor to
+  `round_<r>/client_<c>/hf`, then scores it through the normal `eval_global` path against the
+  **unperturbed val service** — sidestepping the within-job routing problem (the env can't tell a train
+  rollout from a val rollout to swap service URLs mid-job, so the client's *own* job can't self-eval on
+  the clean set). Must run **before** `cleanup_round_checkpoints` (it reads the client shards; the merged
+  `hf` survives).
+- **worker** (hot engine): after each client's `fit()`, `_worker_validate(r, client_id=c)` scores the
+  just-trained model on the **hot** rollout engine — no merge, no second service.
+
+GPU-validated on the 2×2 WebShop smoke for **both** paths: `client_curve` = 4 circles
+(r1c0, r1c1, r2c0, r2c1, all `−0.6`), matching the 3-point red line `val_curve` (r0 base, r1/r2
+aggregate). Off by default — the red line is the headline curve; circles are opt-in diagnostics.
+
 ### 7.5 Windowed-default release blocker — FIXED
 The new `rollout_mode=windowed` default crashed on the stock `agent.yaml`
 (`AttributeError: GymTextAgentLoop has no run_episode_windowed`, §2.6). Fixed **without** editing the
@@ -570,7 +588,7 @@ Everything below is **overlay-only (no verl fork)** and currently **local/uncomm
 | file | purpose | key symbols |
 |---|---|---|
 | [persistent_patch.py](../fed/persistent_patch.py) | attach per-client reset methods to verl worker classes via a deferred import hook | `reload_client_model` (ActorRolloutRefWorker), `reload_critic_model` (TrainingWorker), `install_deferred_persistent_patch()` |
-| [persistent_task_runner.py](../fed/persistent_task_runner.py) | `PersistentFedTaskRunner(TaskRunner)`: init_workers once, fit-per-client; **cross-round outer loop**; **per-client service routing**; **`eval_mode=worker`** hot-engine eval (§7.4) | `run()`, `_reset_for_client(spec)`, `_wait_next_round(xdir,r)`, `_route_service(spec)`, `_worker_validate(r)` (update_weights+global_steps+dump-executor+sleep_replicas), `_should_worker_eval(r)` (every-round gate) |
+| [persistent_task_runner.py](../fed/persistent_task_runner.py) | `PersistentFedTaskRunner(TaskRunner)`: init_workers once, fit-per-client; **cross-round outer loop**; **per-client service routing**; **`eval_mode=worker`** hot-engine eval + **client-end circles** (§7.4) | `run()`, `_reset_for_client(spec)`, `_wait_next_round(xdir,r)`, `_route_service(spec)`, `_worker_validate(r, client_id=None)` (update_weights+global_steps+dump-executor+sleep_replicas; `client_id` → client-end circle), `_should_worker_eval(r)` (every-round gate) |
 | [persistent_main.py](../fed/persistent_main.py) | Hydra entry → `run_ppo(config, task_runner_class=ray.remote(...)(PersistentFedTaskRunner))` | `main()` |
 | [compare_fsdp_checkpoints.py](../../tools/verl08_migration/compare_fsdp_checkpoints.py) | tensor-by-tensor FSDP-checkpoint equivalence diff | `compare_dir(a,b,atol)` |
 
@@ -579,7 +597,7 @@ Everything below is **overlay-only (no verl fork)** and currently **local/uncomm
 | file | change |
 |---|---|
 | [sitecustomize.py](../../sitecustomize.py) | gated `FEDAGENT_PERSISTENT=1` → `install_deferred_persistent_patch()` (every Ray worker gets the reset methods) |
-| [run_fed.py](../fed/run_fed.py) | **#4 per-round:** `persistent` flag + `run_round_persistent()` + run-loop branch. **#4 cross-round:** `cross_round` flag + `BgProc` (line-buffered log) + `_wait_signal` + `stop_persistent_cross_round` + signal-file handshake. **routing:** `client_service_url()` + plan `service_url` + `FEDAGENT_SERVICE_URL_FILE`. **eval modes (§7.4):** `eval_mode` inline/parallel/shared/worker — `_build_eval`/`eval_global`/`launch_eval_async`/`collect_eval`; per-round eval **every round** (`if do_eval:`, not `r%test_freq`); `cross_round`+inline → auto-fallback to per-round. **metrics:** flush BgProc + parse the launch log (cross-round) so `metrics.json` isn't `[]`. **#2:** `prewarm_next_round_services()`. **windowed:** `history_length_env()` |
+| [run_fed.py](../fed/run_fed.py) | **#4 per-round:** `persistent` flag + `run_round_persistent()` + run-loop branch. **#4 cross-round:** `cross_round` flag + `BgProc` (line-buffered log) + `_wait_signal` + `stop_persistent_cross_round` + signal-file handshake. **routing:** `client_service_url()` + plan `service_url` + `FEDAGENT_SERVICE_URL_FILE`. **eval modes (§7.4):** `eval_mode` inline/parallel/shared/worker — `_build_eval`/`eval_global`/`launch_eval_async`/`collect_eval`; per-round eval **every round** (`if do_eval:`, not `r%test_freq`); `cross_round`+inline → auto-fallback to per-round. **client-end circles (§7.4):** `client_end_eval` flag + `eval_client()` (merge client actor → `client_<c>/hf` + eval on val service, before cleanup) + `merge_to_hf(out_hf=)`/`_build_eval(client_id=)`; emits `client_curve` in summary. **metrics:** flush BgProc + parse the launch log (cross-round) so `metrics.json` isn't `[]`. **#2:** `prewarm_next_round_services()`. **windowed:** `history_length_env()` |
 | [fedagent_ppo.yaml](../config/fedagent_ppo.yaml) | added `critic:` block (PPO/gae value-model micro-batch; inert under GRPO) |
 | `fedagent/config/paper/*.yaml` (176) | **regenerated** to the windowed `response_length=512` budget (was `6144`/`8192`); via `tools/verl08_migration/gen_paper_configs.py --out fedagent/config/paper` |
 | [base.py](../envs/base.py) | `resolve_service_url(env_var, cfg, default)` — file-channel routing helper (file > env-var > config > default) |
