@@ -58,22 +58,22 @@ The orchestrator is verl-agnostic. For each round `r`:
 ```
 model_r = base                 (r == 1)
         = round_{r-1}/aggregated/hf   (r > 1)   # merged FedAvg'd FSDP shards
-for each selected client c (SEQUENTIAL):                 # run_fed.py:854
+for each selected client c (SEQUENTIAL):                 # run_fed.py:1046
     python -m fedagent.main_ppo_fed  model.path=model_r  default_local_dir=round_r/client_c ...
         -> FSDP actor (+critic for PPO) checkpoint shards
-FedAvg:  torchrun aggregate_fedavg_fsdp.py  --client-actor-dirs c0,c1 ...   # run_fed.py:865
-merge :  python -m verl.model_merger  ->  round_r/aggregated/hf            # run_fed.py:866
+FedAvg:  torchrun aggregate_fedavg_fsdp.py  --client-actor-dirs c0,c1 ...   # run_fed.py:1074
+merge :  python -m verl.model_merger  ->  round_r/aggregated/hf            # run_fed.py:1116
 eval  :  (every round) a SEPARATE val-only subprocess (inline) | hot engine (worker)   # run_fed.py
 ```
 
 Key properties (all confirmed in code):
 - **One fresh OS subprocess per (client, round)** — clean isolation, guaranteed GPU release.
-  Clients within a round are **sequential** (`for c in selected`, `run_fed.py:854`).
+  Clients within a round are **sequential** (`for c in selected`, `run_fed.py:1046`).
 - **Rounds are a hard barrier:** round `r+1` cannot start until `FedAvg(r)`+`merge(r)` produce `model_r`.
-- **Eval is its own subprocess** (`eval_global`, `run_fed.py:501-544`, `trainer.val_only=true`) → it
+- **Eval is its own subprocess** (`eval_global`, `run_fed.py:717`, `trainer.val_only=true`) → it
   pays a *second* full cold-start, and it runs **after** the round, blocking nothing but blocked by it.
 - **Env services** (WebShop/ALFWorld) are **per-client remote FastAPI services**, started **lazily**
-  per round (only the round's selected clients), torn down before aggregation (`run_fed.py:849-863`).
+  per round (only the round's selected clients), torn down before aggregation (`run_fed.py:1386`).
   The unperturbed **val service** starts once and stays up.
 - Baselines (federated / centralized / local), FedProx (via `sitecustomize.py`), and the
   unperturbed eval curve (`val_before_train`, `test_freq`) are all wired.
@@ -84,7 +84,7 @@ Key properties (all confirmed in code):
 | **windowed** | the paper's per-turn rollout | 1 per **turn** | `history_length=2` template | ✅ yes | `WindowedAgentLoopManager` |
 | **concat** | stock verl GymTextAgentLoop | 1 per **episode** | full history | opt-in | stock `AgentLoopManager` |
 
-`run_fed.inject_rollout_mode` (`run_fed.py:490-498`) injects the windowed manager into **both**
+`run_fed.inject_rollout_mode` (`run_fed.py:647`) injects the windowed manager into **both**
 train and eval cmds unless an explicit `manager_class` override is present.
 
 **The windowed fix** (`fedagent/agent_loops/windowed_manager.py`): windowed expands one episode into
@@ -238,7 +238,7 @@ Overlap round `r+1`'s env-pool warmup (minutes for WebShop/ALFWorld) with round 
 - **Why safe:** pure scheduling, **zero numerical impact**. CPU-only services overlap GPU aggregation —
   no resource contention.
 - **Feasible:** `select_clients(r+1, …)` is deterministic (seeded `base_seed + round - 1`,
-  `run_fed.py:557-571`) → next round's clients are known before round `r` ends. Ports are
+  `run_fed.py:799-811`) → next round's clients are known before round `r` ends. Ports are
   client-indexed (`base_port + client_id`) → no cross-round collision **except** a client selected in
   both consecutive rounds (handle: skip prewarm for the overlap, or reuse the live service).
 - **Patch shape** (`run_fed.py`): add `prewarm_next_round_services(cfg, env_base, r)` (calls the existing
@@ -272,7 +272,7 @@ pays cold-start *once* instead of ~140 times.
 - **Cleanest seam:** factor the body of `RayPPOTrainer.fit()` into a re-enterable `_fit_one_client()`,
   driven by an outer loop. The natural cut is **`ray_trainer.py:1383-1410`** — everything *above*
   (`init_workers()`) is one-time; from `self.global_steps = 0` (L1383) down is already per-`fit()` and
-  becomes per-client. The overlay driver seam is **`run_fed.py:854-861`** (the `for c in selected`
+  becomes per-client. The overlay driver seam is **`run_fed.py:1046`** (the `for c in selected`
   loop becomes `trainer.train_client(c, model_r, seed_c)` instead of `subprocess.Popen`).
 - **Sharp detail:** the FedAvg aggregator writes **only** `model_world_size_*` shards and **strips the
   optimizer/extra shards** (`aggregate_fedavg_fsdp.py:75-76`). So you **cannot** reuse
@@ -321,7 +321,7 @@ process must reproduce each of these by hand:
 ### Lever #3 — parallel clients within a round *(single-node wins for small models — GPU-validated; multi-node for large)*
 `for c in selected` → concurrent, each client on its own GPU subset/node. **Numerically identical**
 to sequential (FedAvg is order-free; the per-client env seed is `base_seed + round*100 + client`
-(`run_fed.py:635`), *client-indexed, not order-dependent*). Splitting 4 GPUs → 2+2 changes FSDP
+(`run_fed.py:877`), *client-indexed, not order-dependent*). Splitting 4 GPUs → 2+2 changes FSDP
 `world_size` → shard layout (aggregator reads `world_size_of` dynamically; same global batch ⇒ same numerics).
 
 **GPU-validated on ONE node (2 client × 2 GPU, 1.5B, paper settings) — and it's ~35% faster, not a wash.**
