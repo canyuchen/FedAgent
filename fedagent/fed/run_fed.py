@@ -1084,7 +1084,7 @@ def fedavg(cfg, round_num: int, client_dirs: List[Path], env_base: dict,
     agg = (Path(cfg.output_dir) / f"round_{round_num}" / "aggregated"
            / "checkpoints" / "global_step_0" / kind)
     cmd = [
-        "torchrun", f"--nproc_per_node={ws}", str(AGGREGATOR),
+        "torchrun", "--standalone", f"--nproc_per_node={ws}", str(AGGREGATOR),
         "--phase", "aggregate",
         "--client-actor-dirs", ",".join(str(a) for a in client_dirs),
         "--output-actor-dir", str(agg),
@@ -1093,7 +1093,16 @@ def fedavg(cfg, round_num: int, client_dirs: List[Path], env_base: dict,
     if cfg.weights:
         cmd += ["--weights", cfg.weights]
     log_path = Path(cfg.output_dir) / f"round_{round_num}" / "aggregated" / f"aggregate_{kind}.log"
-    rc = stream(cmd, env_base, log_path, tag=f"agg-{kind}-r{round_num}")
+    # --standalone gives this torchrun its OWN rendezvous (a free port, not the default
+    # localhost:29500), so concurrent FedAvg aggregations on one node -- parallel clients,
+    # or two run_fed experiments sharing a node -- don't collide on 29500 (one would die
+    # rc=1 mid-aggregate). Clear any inherited torch-distributed env so it cannot override
+    # --standalone's auto-assigned port. Affects only the aggregator's comm port: the FedAvg
+    # math, rollout, and eval are untouched. (PPO critic FedAvg routes through here too.)
+    agg_env = dict(env_base)
+    for _k in ("MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE", "LOCAL_RANK"):
+        agg_env.pop(_k, None)
+    rc = stream(cmd, agg_env, log_path, tag=f"agg-{kind}-r{round_num}")
     if rc != 0:
         raise RuntimeError(f"FedAvg {kind} round {round_num} FAILED (rc={rc}); see {log_path}")
     if not list(agg.glob("model_world_size_*_rank_*.pt")):
